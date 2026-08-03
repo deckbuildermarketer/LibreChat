@@ -2998,7 +2998,7 @@ export function splitToolCallName(
 export const MAX_SUBAGENT_DEPTH = 5;
 
 /** Maximum unique explicit subagent targets that may be loaded at runtime. */
-export const MAX_SUBAGENT_GRAPH_NODES = 50;
+export const MAX_SUBAGENT_GRAPH_NODES = 90;
 
 /** Maximum expanded SubagentConfig entries embedded into one run request. */
 export const MAX_SUBAGENT_RUN_CONFIGS = 100;
