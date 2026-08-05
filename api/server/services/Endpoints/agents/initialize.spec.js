@@ -864,28 +864,57 @@ describe('initializeClient — subagent loading', () => {
   });
 
   it('rejects subagent graphs that exceed MAX_SUBAGENT_GRAPH_NODES unique agents', async () => {
-    const firstLevelIds = Array.from({ length: 10 }, (_, index) => `agent_graph_${index}`);
-    const secondLevelIdsByParent = new Map(
-      firstLevelIds.map((id) => [
-        id,
-        Array.from({ length: 5 }, (_, index) => `${id}_child_${index}`),
-      ]),
-    );
-    const allIds = [...firstLevelIds, ...Array.from(secondLevelIdsByParent.values()).flat()];
+    const maxChildrenPerAgent = 10;
+    const targetNodeCount = MAX_SUBAGENT_GRAPH_NODES + 1;
+
+    /**
+     * Create one more unique subagent than the configured graph limit.
+     * The graph is built breadth-first and no agent receives more than
+     * 10 explicit children.
+     *
+     * With MAX_SUBAGENT_GRAPH_NODES = 300, this produces:
+     * - 10 first-level agents
+     * - 100 second-level agents
+     * - 191 third-level agents
+     * - 301 unique subagents total
+     */
+    const allIds = Array.from({ length: targetNodeCount }, (_, index) => `agent_graph_${index}`);
+
+    const firstLevelIds = allIds.slice(0, maxChildrenPerAgent);
+    const childrenByParent = new Map();
+
+    const parentQueue = [...firstLevelIds];
+    let nextIdIndex = firstLevelIds.length;
+
+    while (nextIdIndex < allIds.length) {
+      const parentId = parentQueue.shift();
+
+      if (!parentId) {
+        throw new Error('Unable to construct subagent graph test fixture.');
+      }
+
+      const childIds = allIds.slice(nextIdIndex, nextIdIndex + maxChildrenPerAgent);
+
+      nextIdIndex += childIds.length;
+      childrenByParent.set(parentId, childIds);
+      parentQueue.push(...childIds);
+    }
 
     for (const id of allIds) {
       await createViewableAgent(id);
     }
 
     const primaryConfig = makePrimaryConfig({
-      subagents: { enabled: true, allowSelf: false, agent_ids: firstLevelIds },
+      subagents: {
+        enabled: true,
+        allowSelf: false,
+        agent_ids: firstLevelIds,
+      },
     });
+
     const nestedConfigs = new Map(
-      firstLevelIds.map((id) => [id, makeNestedSubagentConfig(id, secondLevelIdsByParent.get(id))]),
+      allIds.map((id) => [id, makeNestedSubagentConfig(id, childrenByParent.get(id) ?? [])]),
     );
-    for (const id of Array.from(secondLevelIdsByParent.values()).flat()) {
-      nestedConfigs.set(id, makeNestedSubagentConfig(id));
-    }
 
     mockInitializeAgent.mockImplementation(({ agent }) =>
       Promise.resolve(agent.id === PRIMARY_ID ? primaryConfig : nestedConfigs.get(agent.id)),
@@ -899,6 +928,7 @@ describe('initializeClient — subagent loading', () => {
         endpointOption: makeEndpointOption(),
       }),
     ).rejects.toThrow(`maximum of ${MAX_SUBAGENT_GRAPH_NODES} unique agents`);
+
     expect(logger.warn).toHaveBeenCalledWith(
       '[initializeClient] Subagent graph node limit exceeded',
       expect.objectContaining({
@@ -907,6 +937,7 @@ describe('initializeClient — subagent loading', () => {
         maxSubagentGraphNodes: MAX_SUBAGENT_GRAPH_NODES,
       }),
     );
+
     expect(agentClientArgs).toBeUndefined();
   });
 
