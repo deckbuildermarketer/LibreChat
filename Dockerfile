@@ -53,9 +53,12 @@ RUN \
 
 COPY --chown=node:node . .
 
-RUN \
-    # React client build with configurable memory
+RUN set -e; \
+    # React client build with configurable memory. Fail the image build immediately
+    # if any frontend/package compilation step fails so Railway cannot publish an
+    # image without /app/client/dist and only surface ENOENT at runtime.
     NODE_OPTIONS="--max-old-space-size=${NODE_MAX_OLD_SPACE_SIZE}" npm run frontend; \
+    test -f /app/client/dist/index.html; \
     npm prune --production; \
     npm cache clean --force
 
