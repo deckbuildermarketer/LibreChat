@@ -31,4 +31,14 @@ describe('DBM memory createRun wrapper helpers', () => {
       aliases[1],
     ]);
   });
+
+  it('prioritizes reachable graph order over gateway alias order', () => {
+    const aliases = [
+      { librechatAgentId: 'agent_child', memoryKey: 'agent:child' },
+      { librechatAgentId: 'agent_root', memoryKey: 'agent:root' },
+    ];
+    expect(
+      selectDBMMemoryAliases([{ id: 'agent_root' }, { id: 'agent_child' }], aliases, 1),
+    ).toEqual([aliases[1]]);
+  });
 });
