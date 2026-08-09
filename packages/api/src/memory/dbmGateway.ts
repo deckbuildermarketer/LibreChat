@@ -284,6 +284,9 @@ export async function recallDBMMemory({
     {
       method: 'POST',
       body: JSON.stringify({
+        // `agentId` is the Gateway's canonical lookup field. Keep the explicit
+        // LibreChat ID + stable memoryKey too so the Gateway can validate the alias.
+        agentId: alias.librechatAgentId,
         librechatAgentId: alias.librechatAgentId,
         memoryKey: alias.memoryKey,
         userId: context.userId,
@@ -338,6 +341,7 @@ export async function extractDBMMemory({
     {
       method: 'POST',
       body: JSON.stringify({
+        agentId: alias.librechatAgentId,
         librechatAgentId: alias.librechatAgentId,
         memoryKey: alias.memoryKey,
         userId: context.userId,
