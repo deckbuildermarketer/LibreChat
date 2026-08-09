@@ -3,6 +3,7 @@ import {
   getDBMMemoryAssistantOutput,
   getDBMMemoryQuery,
   selectDBMMemoryAliases,
+  selectRootDBMMemoryAlias,
 } from './dbmMemoryRun';
 
 describe('DBM memory createRun wrapper helpers', () => {
@@ -40,5 +41,18 @@ describe('DBM memory createRun wrapper helpers', () => {
     expect(
       selectDBMMemoryAliases([{ id: 'agent_root' }, { id: 'agent_child' }], aliases, 1),
     ).toEqual([aliases[1]]);
+  });
+
+  it('selects only the exact root alias for PRE-RUN recall', () => {
+    const aliases = [
+      { librechatAgentId: 'agent_child', memoryKey: 'agent:child' },
+      { librechatAgentId: 'agent_root', memoryKey: 'agent:root' },
+    ];
+    expect(selectRootDBMMemoryAlias({ id: 'agent_root' }, aliases)).toEqual(aliases[1]);
+  });
+
+  it('does not fall through to a child when the root has no registered alias', () => {
+    const aliases = [{ librechatAgentId: 'agent_child', memoryKey: 'agent:child' }];
+    expect(selectRootDBMMemoryAlias({ id: 'agent_unregistered_root' }, aliases)).toBeUndefined();
   });
 });
