@@ -15,6 +15,7 @@ import {
 } from '~/memory/dbmGateway';
 
 type CreateRunOptions = Parameters<typeof createBaseRun>[0];
+type CreateRunResult = Awaited<ReturnType<typeof createBaseRun>>;
 type ReachableAgent = CreateRunOptions['agents'][number] & {
   additional_instructions?: string;
   subagentAgentConfigs?: ReachableAgent[];
@@ -132,7 +133,7 @@ function collectReachableAgents(agents: CreateRunOptions['agents']): ReachableAg
 export function selectDBMMemoryAliases(
   agents: Array<{ id?: string }>,
   aliases: DBMMemoryAlias[],
-  limit = DEFAULT_MAX_AGENTS_PER_RUN,
+  limit: number = DEFAULT_MAX_AGENTS_PER_RUN,
 ): DBMMemoryAlias[] {
   const aliasByAgentId = new Map(aliases.map((alias) => [alias.librechatAgentId, alias]));
   const selected: DBMMemoryAlias[] = [];
@@ -328,7 +329,7 @@ function scheduleExtraction({
  * - Post-run extraction is fire-and-forget and only targets aliased agents that
  *   actually produced a model result during this run (root is a fallback).
  */
-export async function createRun(options: CreateRunOptions) {
+export async function createRun(options: CreateRunOptions): Promise<CreateRunResult> {
   if (!isDBMMemoryEnabled()) {
     return createBaseRun(options);
   }
@@ -356,7 +357,7 @@ export async function createRun(options: CreateRunOptions) {
     customHandlers: wrapModelEndHandler(options.customHandlers, activeAgentIds),
   };
 
-  let run: Awaited<ReturnType<typeof createBaseRun>>;
+  let run: CreateRunResult;
   try {
     run = await createBaseRun(wrappedOptions);
   } finally {
