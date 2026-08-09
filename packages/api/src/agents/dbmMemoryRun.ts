@@ -31,11 +31,6 @@ type RunSnapshot = {
 
 const DEFAULT_MAX_AGENTS_PER_RUN = 8;
 
-function maxAgentsPerRun(): number {
-  const parsed = Number(process.env.DBM_MEMORY_MAX_AGENTS_PER_RUN);
-  return Number.isFinite(parsed) && parsed >= 1 ? parsed : DEFAULT_MAX_AGENTS_PER_RUN;
-}
-
 function contentToText(content: unknown): string {
   if (typeof content === 'string') {
     return content.trim();
@@ -127,8 +122,7 @@ function collectReachableAgents(agents: CreateRunOptions['agents']): ReachableAg
 
 /**
  * Selects aliases in reachable-agent order, not gateway-return order.
- * This guarantees the root agent is considered first and then follows the
- * actual graph traversal when DBM_MEMORY_MAX_AGENTS_PER_RUN applies a cap.
+ * Kept as a pure helper for diagnostics/tests and bounded selections.
  */
 export function selectDBMMemoryAliases(
   agents: Array<{ id?: string }>,
@@ -153,6 +147,21 @@ export function selectDBMMemoryAliases(
     }
   }
   return selected;
+}
+
+/**
+ * PRE-RUN recall must never fall through from an unregistered root to one of
+ * its merely reachable children. A child receives memory only when it becomes
+ * an actual run target through its own run lifecycle.
+ */
+export function selectRootDBMMemoryAlias(
+  rootAgent: { id?: string } | undefined,
+  aliases: DBMMemoryAlias[],
+): DBMMemoryAlias | undefined {
+  if (!rootAgent?.id) {
+    return undefined;
+  }
+  return aliases.find((alias) => alias.librechatAgentId === rootAgent.id);
 }
 
 function buildMemoryContext(options: CreateRunOptions): DBMMemoryContext {
@@ -237,11 +246,16 @@ async function prepareMemory(options: CreateRunOptions): Promise<{
   }
 
   const reachableAgents = collectReachableAgents(options.agents);
-  const reachableById = new Map(reachableAgents.map((agent) => [agent.id, agent]));
   const aliases = await getDBMMemoryAliases();
-  const selected = selectDBMMemoryAliases(reachableAgents, aliases, maxAgentsPerRun());
-  for (const alias of selected) {
-    aliasesByAgentId.set(alias.librechatAgentId, alias);
+  const aliasByAgentId = new Map(aliases.map((alias) => [alias.librechatAgentId, alias]));
+
+  // Build an in-memory lookup for POST-RUN extraction. This performs zero Mem0
+  // searches and lets extraction target only agents that actually ran.
+  for (const agent of reachableAgents) {
+    const alias = aliasByAgentId.get(agent.id);
+    if (alias) {
+      aliasesByAgentId.set(agent.id, alias);
+    }
   }
 
   if (!isDBMMemoryRecallEnabled()) {
@@ -253,29 +267,34 @@ async function prepareMemory(options: CreateRunOptions): Promise<{
     return { aliasesByAgentId, restore };
   }
 
+  const rootAgent = options.agents[0] as ReachableAgent | undefined;
+  const rootAlias = selectRootDBMMemoryAlias(rootAgent, aliases);
+  if (!rootAlias || !rootAgent) {
+    return { aliasesByAgentId, restore };
+  }
+
   const context = buildMemoryContext(options);
-  await Promise.all(
-    selected.map(async (alias) => {
-      const result = await recallDBMMemory({ alias, query, context });
-      if (!result) {
-        return;
-      }
-      logger.debug('[DBM Memory] recall completed', {
-        agentId: alias.librechatAgentId,
-        memoryKey: alias.memoryKey,
-        memories: result.memories.length,
-        shadow: !isDBMMemoryInjectionEnabled(),
-      });
-      if (!isDBMMemoryInjectionEnabled()) {
-        return;
-      }
-      const instruction = formatDBMMemoryForInjection(result);
-      const agent = reachableById.get(alias.librechatAgentId);
-      if (instruction && agent) {
-        restore.push(appendMemoryInstruction(agent, instruction));
-      }
-    }),
-  );
+  const result = await recallDBMMemory({ alias: rootAlias, query, context });
+  if (!result) {
+    return { aliasesByAgentId, restore };
+  }
+
+  logger.debug('[DBM Memory] recall completed', {
+    agentId: rootAlias.librechatAgentId,
+    memoryKey: rootAlias.memoryKey,
+    memories: result.memories.length,
+    shadow: !isDBMMemoryInjectionEnabled(),
+    scope: 'root-agent-only',
+  });
+
+  if (!isDBMMemoryInjectionEnabled()) {
+    return { aliasesByAgentId, restore };
+  }
+
+  const instruction = formatDBMMemoryForInjection(result);
+  if (instruction) {
+    restore.push(appendMemoryInstruction(rootAgent, instruction));
+  }
 
   return { aliasesByAgentId, restore };
 }
@@ -324,6 +343,8 @@ function scheduleExtraction({
  * Design constraints:
  * - DBM memory is completely fail-open.
  * - With DBM_MEMORY_ENABLED=false, behavior is the canonical createRun path.
+ * - PRE-RUN recall is limited to the actual root agent; reachable subagents are
+ *   not prefetched simply because they exist in the graph.
  * - Retrieved memory is appended only to request-scoped additional_instructions.
  * - Original agent objects are restored immediately after graph construction.
  * - Post-run extraction is fire-and-forget and only targets aliased agents that
