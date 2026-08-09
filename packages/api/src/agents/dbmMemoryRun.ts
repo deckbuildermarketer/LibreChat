@@ -124,14 +124,34 @@ function collectReachableAgents(agents: CreateRunOptions['agents']): ReachableAg
   return result;
 }
 
+/**
+ * Selects aliases in reachable-agent order, not gateway-return order.
+ * This guarantees the root agent is considered first and then follows the
+ * actual graph traversal when DBM_MEMORY_MAX_AGENTS_PER_RUN applies a cap.
+ */
 export function selectDBMMemoryAliases(
   agents: Array<{ id?: string }>,
   aliases: DBMMemoryAlias[],
   limit = DEFAULT_MAX_AGENTS_PER_RUN,
 ): DBMMemoryAlias[] {
-  const reachableIds = new Set(agents.map((agent) => agent.id).filter((id): id is string => !!id));
-  const selected = aliases.filter((alias) => reachableIds.has(alias.librechatAgentId));
-  return selected.slice(0, Math.max(1, limit));
+  const aliasByAgentId = new Map(aliases.map((alias) => [alias.librechatAgentId, alias]));
+  const selected: DBMMemoryAlias[] = [];
+  const seen = new Set<string>();
+  for (const agent of agents) {
+    if (!agent.id || seen.has(agent.id)) {
+      continue;
+    }
+    const alias = aliasByAgentId.get(agent.id);
+    if (!alias) {
+      continue;
+    }
+    seen.add(agent.id);
+    selected.push(alias);
+    if (selected.length >= Math.max(1, limit)) {
+      break;
+    }
+  }
+  return selected;
 }
 
 function buildMemoryContext(options: CreateRunOptions): DBMMemoryContext {
@@ -205,12 +225,24 @@ function wrapModelEndHandler(
   } as CreateRunOptions['customHandlers'];
 }
 
-async function prepareRecall(options: CreateRunOptions): Promise<{
+async function prepareMemory(options: CreateRunOptions): Promise<{
   aliasesByAgentId: Map<string, DBMMemoryAlias>;
   restore: Array<() => void>;
 }> {
   const aliasesByAgentId = new Map<string, DBMMemoryAlias>();
   const restore: Array<() => void> = [];
+  if (!isDBMMemoryRecallEnabled() && !isDBMMemoryWriteEnabled()) {
+    return { aliasesByAgentId, restore };
+  }
+
+  const reachableAgents = collectReachableAgents(options.agents);
+  const reachableById = new Map(reachableAgents.map((agent) => [agent.id, agent]));
+  const aliases = await getDBMMemoryAliases();
+  const selected = selectDBMMemoryAliases(reachableAgents, aliases, maxAgentsPerRun());
+  for (const alias of selected) {
+    aliasesByAgentId.set(alias.librechatAgentId, alias);
+  }
+
   if (!isDBMMemoryRecallEnabled()) {
     return { aliasesByAgentId, restore };
   }
@@ -220,15 +252,9 @@ async function prepareRecall(options: CreateRunOptions): Promise<{
     return { aliasesByAgentId, restore };
   }
 
-  const reachableAgents = collectReachableAgents(options.agents);
-  const reachableById = new Map(reachableAgents.map((agent) => [agent.id, agent]));
-  const aliases = await getDBMMemoryAliases();
-  const selected = selectDBMMemoryAliases(reachableAgents, aliases, maxAgentsPerRun());
   const context = buildMemoryContext(options);
-
   await Promise.all(
     selected.map(async (alias) => {
-      aliasesByAgentId.set(alias.librechatAgentId, alias);
       const result = await recallDBMMemory({ alias, query, context });
       if (!result) {
         return;
@@ -316,11 +342,11 @@ export async function createRun(options: CreateRunOptions) {
   let aliasesByAgentId = new Map<string, DBMMemoryAlias>();
   let restore: Array<() => void> = [];
   try {
-    const prepared = await prepareRecall(options);
+    const prepared = await prepareMemory(options);
     aliasesByAgentId = prepared.aliasesByAgentId;
     restore = prepared.restore;
   } catch (error) {
-    logger.warn('[DBM Memory] recall preparation failed; continuing without external memory', {
+    logger.warn('[DBM Memory] preparation failed; continuing without external memory', {
       error: error instanceof Error ? error.message : String(error),
     });
   }
