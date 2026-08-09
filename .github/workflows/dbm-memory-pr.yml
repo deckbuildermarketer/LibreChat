@@ -17,4 +17,4 @@ jobs:
           cache: npm
       - run: npm ci --no-audit
       - run: npm run build:api
-      - run: npm --workspace=packages/api test -- --runInBand src/memory/dbmGateway.spec.ts src/agents/dbmMemoryRun.spec.ts src/agents/subagents.spec.ts
+      - run: npm --workspace=packages/api run test:ci -- --runInBand --runTestsByPath src/memory/dbmGateway.spec.ts src/agents/dbmMemoryRun.spec.ts src/agents/subagents.spec.ts
