@@ -1,5 +1,6 @@
 import {
   clearDBMMemoryAliasCache,
+  extractDBMMemory,
   formatDBMMemoryForInjection,
   parseDBMMemoryRecall,
   recallDBMMemory,
@@ -16,6 +17,7 @@ describe('DBM Memory Gateway helpers', () => {
     jest.restoreAllMocks();
     delete process.env.DBM_MEMORY_ENABLED;
     delete process.env.DBM_MEMORY_RECALL_ENABLED;
+    delete process.env.DBM_MEMORY_WRITE_ENABLED;
     delete process.env.DBM_MEMORY_GATEWAY_URL;
     delete process.env.DBM_MEMORY_GATEWAY_API_KEY;
   });
@@ -84,5 +86,45 @@ describe('DBM Memory Gateway helpers', () => {
       memoryKey: 'agent:test',
       userId: 'user_test',
     });
+  });
+
+  it('matches the dbm-memory-gateway v1 extraction schema', async () => {
+    process.env.DBM_MEMORY_ENABLED = 'true';
+    process.env.DBM_MEMORY_WRITE_ENABLED = 'true';
+    process.env.DBM_MEMORY_GATEWAY_URL = 'https://memory.example.test';
+    process.env.DBM_MEMORY_GATEWAY_API_KEY = 'test-key';
+
+    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 202,
+      json: async () => ({ accepted: true }),
+    } as Response);
+
+    await extractDBMMemory({
+      alias: {
+        librechatAgentId: 'agent_scout',
+        memoryKey: 'agent:scout',
+      },
+      input: 'Always verify GHL notes and private KB for latest client calls.',
+      output: 'Understood. I will use that standard going forward.',
+      context: {
+        userId: 'user_test',
+        conversationId: 'conversation_test',
+        runId: 'run_test',
+      },
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const init = fetchMock.mock.calls[0]?.[1];
+    const body = JSON.parse(String(init?.body));
+    expect(body).toEqual({
+      agentId: 'agent_scout',
+      userId: 'user_test',
+      conversationId: 'conversation_test',
+      userMessage: 'Always verify GHL notes and private KB for latest client calls.',
+      assistantMessage: 'Understood. I will use that standard going forward.',
+      source: 'librechat',
+    });
+    expect(body.messages).toBeUndefined();
   });
 });
