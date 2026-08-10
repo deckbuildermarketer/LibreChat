@@ -336,30 +336,30 @@ export async function extractDBMMemory({
     return;
   }
   const config = getGatewayConfig();
-  await gatewayRequest<unknown>(
+  const result = await gatewayRequest<unknown>(
     config.extractPath,
     {
       method: 'POST',
       body: JSON.stringify({
+        // Match the dbm-memory-gateway v1 ExtractSchema exactly. The Gateway
+        // resolves the stable memory identity from this LibreChat agent ID.
         agentId: alias.librechatAgentId,
-        librechatAgentId: alias.librechatAgentId,
-        memoryKey: alias.memoryKey,
         userId: context.userId,
-        tenantId: context.tenantId,
         conversationId: context.conversationId,
-        runId: context.runId,
-        idempotencyKey: context.runId
-          ? `${context.runId}:${alias.librechatAgentId}`
-          : undefined,
-        messages: [
-          { role: 'user', content: input.trim() },
-          { role: 'assistant', content: output.trim() },
-        ],
+        userMessage: input.trim(),
+        assistantMessage: output.trim(),
         source: 'librechat',
       }),
     },
     `extraction for ${alias.librechatAgentId}`,
   );
+  if (result != null) {
+    logger.debug('[DBM Memory] extraction accepted by gateway', {
+      agentId: alias.librechatAgentId,
+      memoryKey: alias.memoryKey,
+      conversationId: context.conversationId,
+    });
+  }
 }
 
 /** Test-only/cache-maintenance seam. */
