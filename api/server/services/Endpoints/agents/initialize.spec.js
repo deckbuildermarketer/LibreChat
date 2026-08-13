@@ -1175,60 +1175,60 @@ describe('initializeClient — subagent loading', () => {
   });
 
   it('rejects subagent graphs that exceed MAX_SUBAGENT_GRAPH_NODES unique agents', async () => {
-  // Build exactly one more unique subagent than the configured graph limit.
-  // A bounded 10-way BFS keeps every agent within the explicit per-parent fanout limit
-  // while making this upstream regression test valid for DBM's larger graph budget too.
-  const branchingFactor = 10;
-  const allIds = Array.from(
-    { length: MAX_SUBAGENT_GRAPH_NODES + 1 },
-    (_, index) => `agent_graph_${index}`,
-  );
-  const firstLevelIds = allIds.slice(0, Math.min(branchingFactor, allIds.length));
-  const childIdsByParent = new Map();
-  const queue = [...firstLevelIds];
-  let cursor = firstLevelIds.length;
+    // Build exactly one more unique subagent than the configured graph limit.
+    // A bounded 10-way BFS keeps every agent within the explicit per-parent fanout limit
+    // while making this upstream regression test valid for DBM's larger graph budget too.
+    const branchingFactor = 10;
+    const allIds = Array.from(
+      { length: MAX_SUBAGENT_GRAPH_NODES + 1 },
+      (_, index) => `agent_graph_${index}`,
+    );
+    const firstLevelIds = allIds.slice(0, Math.min(branchingFactor, allIds.length));
+    const childIdsByParent = new Map();
+    const queue = [...firstLevelIds];
+    let cursor = firstLevelIds.length;
 
-  while (cursor < allIds.length && queue.length > 0) {
-    const parentId = queue.shift();
-    const children = allIds.slice(cursor, cursor + branchingFactor);
-    cursor += children.length;
-    childIdsByParent.set(parentId, children);
-    queue.push(...children);
-  }
+    while (cursor < allIds.length && queue.length > 0) {
+      const parentId = queue.shift();
+      const children = allIds.slice(cursor, cursor + branchingFactor);
+      cursor += children.length;
+      childIdsByParent.set(parentId, children);
+      queue.push(...children);
+    }
 
-  for (const id of allIds) {
-    await createViewableAgent(id, {
-      enabled: true,
-      allowSelf: false,
-      agent_ids: childIdsByParent.get(id) ?? [],
+    for (const id of allIds) {
+      await createViewableAgent(id, {
+        enabled: true,
+        allowSelf: false,
+        agent_ids: childIdsByParent.get(id) ?? [],
+      });
+    }
+
+    const primaryConfig = makePrimaryConfig({
+      subagents: { enabled: true, allowSelf: false, agent_ids: firstLevelIds },
     });
-  }
+    mockInitializeAgent.mockResolvedValue(primaryConfig);
 
-  const primaryConfig = makePrimaryConfig({
-    subagents: { enabled: true, allowSelf: false, agent_ids: firstLevelIds },
+    await expect(
+      initializeClient({
+        req: makeSubagentReq(),
+        res: {},
+        signal: new AbortController().signal,
+        endpointOption: makeEndpointOption(),
+      }),
+    ).rejects.toThrow(`maximum of ${MAX_SUBAGENT_GRAPH_NODES} unique agents`);
+    expect(logger.warn).toHaveBeenCalledWith(
+      '[initializeClient] Subagent graph node limit exceeded',
+      expect.objectContaining({
+        primaryAgentId: PRIMARY_ID,
+        loadedSubagentCount: MAX_SUBAGENT_GRAPH_NODES,
+        maxSubagentGraphNodes: MAX_SUBAGENT_GRAPH_NODES,
+      }),
+    );
+    expect(agentClientArgs).toBeUndefined();
   });
-  mockInitializeAgent.mockResolvedValue(primaryConfig);
 
-  await expect(
-    initializeClient({
-      req: makeSubagentReq(),
-      res: {},
-      signal: new AbortController().signal,
-      endpointOption: makeEndpointOption(),
-    }),
-  ).rejects.toThrow(`maximum of ${MAX_SUBAGENT_GRAPH_NODES} unique agents`);
-  expect(logger.warn).toHaveBeenCalledWith(
-    '[initializeClient] Subagent graph node limit exceeded',
-    expect.objectContaining({
-      primaryAgentId: PRIMARY_ID,
-      loadedSubagentCount: MAX_SUBAGENT_GRAPH_NODES,
-      maxSubagentGraphNodes: MAX_SUBAGENT_GRAPH_NODES,
-    }),
-  );
-  expect(agentClientArgs).toBeUndefined();
-});
-
-it('rejects a branching DAG that exceeds expanded descriptor capacity', async () => {
+  it('rejects a branching DAG that exceeds expanded descriptor capacity', async () => {
     const width = 3;
     const layers = Array.from({ length: MAX_SUBAGENT_DEPTH }, (_, level) =>
       Array.from({ length: width }, (_, index) => `agent_descriptor_${level}_${index}`),
