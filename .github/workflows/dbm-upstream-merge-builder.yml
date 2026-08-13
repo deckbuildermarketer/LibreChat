@@ -16,7 +16,7 @@ jobs:
   resolve-and-validate:
     if: ${{ !contains(github.event.head_commit.message, '[resolve-bot]') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Checkout integration branch
         uses: actions/checkout@v4
@@ -46,6 +46,23 @@ jobs:
           rm -rf .dbm-merge-report
           git rm .github/workflows/dbm-upstream-merge-builder.yml
 
+      - name: Update persistent DBM validation workflow
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('.github/workflows/dbm-memory-pr.yml')
+          text = path.read_text()
+          old = '      - run: npm run build:api\n'
+          new = (
+              '      - run: npm run build:data-provider\n'
+              '      - run: npm run build:data-schemas\n'
+              '      - run: npm run build:api\n'
+          )
+          if old not in text:
+              raise SystemExit('Expected legacy DBM build step was not found')
+          path.write_text(text.replace(old, new, 1))
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
@@ -55,8 +72,11 @@ jobs:
       - name: Install dependencies
         run: npm ci --no-audit
 
-      - name: Build API packages
-        run: npm run build:api
+      - name: Build internal workspaces and API
+        run: |
+          npm run build:data-provider
+          npm run build:data-schemas
+          npm run build:api
 
       - name: Run DBM regression tests
         run: >-
