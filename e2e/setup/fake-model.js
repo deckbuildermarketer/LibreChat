@@ -34,9 +34,14 @@ const STEER_TOOL_REPLY_MARKER = 'E2E_STEER_TOOL_REPLY:';
 const STEER_SPLIT_REPLY_MARKER = 'E2E_STEER_SPLIT_REPLY:';
 const STEER_LATE_REPLY_MARKER = 'E2E_STEER_LATE_REPLY:';
 const ACTIVITY_REPLY_MARKER = 'E2E_ACTIVITY_REPLY:';
+const ACTIVITY_PHASE_REPLY_MARKER = 'E2E_ACTIVITY_PHASE_REPLY:';
+const ASK_USER_QUESTION_MARKER = 'E2E_ASK_USER_QUESTION:';
 const RESUME_ICON_REPLY_MARKER = 'E2E_RESUME_ICON_REPLY:';
 const FORCED_ERROR_MARKER = 'E2E_FORCED_ERROR:';
 const MARKDOWN_REPLY_MARKER = 'E2E_MARKDOWN_REPLY';
+const MERMAID_ARTIFACT_REPLY_MARKER = 'E2E_MERMAID_ARTIFACT_REPLY';
+const LARGE_MERMAID_ARTIFACT_REPLY_MARKER = 'E2E_LARGE_MERMAID_ARTIFACT_REPLY';
+const HTML_ARTIFACT_REPLY_MARKER = 'E2E_HTML_ARTIFACT_REPLY';
 const BACKGROUND_DISPATCH_MARKER = 'E2E_BACKGROUND_DISPATCH:';
 const BACKGROUND_COLLECT_MARKER = 'E2E_BACKGROUND_COLLECT:';
 const TOOL_APPROVAL_MARKER = 'E2E_TOOL_APPROVAL:';
@@ -64,7 +69,9 @@ const STEER_SPLIT_FINAL_TEXT = 'E2E steer split reply done';
 const STEER_LATE_FINAL_TEXT = 'E2E steer late reply done';
 const SLOW_REPLY_CONTINUATION_TEXT = 'E2E slow reply continued';
 const ACTIVITY_FINAL_TEXT = 'E2E activity reply done';
+const ACTIVITY_PHASE_FINAL_TEXT = 'E2E activity phase reply done';
 const STEER_TOOL_NAME_PREFIX = 'remember_fact';
+const ASK_USER_QUESTION_TOOL_NAME = 'ask_user_question';
 const SLOW_CHUNK_DELAY_MS = Number(process.env.MOCK_LLM_SLOW_CHUNK_DELAY_MS) || 35;
 const ORDERED_CHUNK_DELAY_MS = 2;
 const ORDERED_REPLY_PIECES = 64;
@@ -376,6 +383,37 @@ function quoteAssertionResponses({ messages, text }) {
 }
 
 function replyResponses(text) {
+  if (text.includes(LARGE_MERMAID_ARTIFACT_REPLY_MARKER)) {
+    const diagram = ['```mermaid', 'flowchart TB'];
+    for (let index = 0; index < 180; index++) {
+      diagram.push(`N${index}["Processing stage ${index} with representative content"]`);
+      if (index > 0) {
+        diagram.push(`N${index - 1} --> N${index}`);
+      }
+    }
+    diagram.push('```');
+
+    return { responses: [diagram.join('\n')], sleep: 0 };
+  }
+
+  if (text.includes(MERMAID_ARTIFACT_REPLY_MARKER)) {
+    return {
+      responses: [['```mermaid', 'flowchart LR', 'A[Start] --> B[Finish]', '```'].join('\n')],
+    };
+  }
+
+  if (text.includes(HTML_ARTIFACT_REPLY_MARKER)) {
+    return {
+      responses: [
+        [
+          ':::artifact{identifier="e2e-html" type="text/html" title="E2E HTML Artifact"}',
+          '<h1>HTML sandbox fixture</h1>',
+          ':::',
+        ].join('\n'),
+      ],
+    };
+  }
+
   if (text.includes(MARKDOWN_REPLY_MARKER)) {
     return {
       responses: [
@@ -1114,6 +1152,98 @@ function activityReplyResponses(label, toolNames) {
   };
 }
 
+/**
+ * Three-turn run with two sequential tool batches for the parent activity-phase
+ * e2e. Each tool invocation produces its own `PostToolBatch`; the final model
+ * turn then closes a phase containing both logical activities. Keeping the
+ * batches sequential is essential because two parallel calls are one activity.
+ */
+function activityPhaseReplyResponses(label, toolNames) {
+  const toolName = Array.from(toolNames).find((name) => name.startsWith(STEER_TOOL_NAME_PREFIX));
+  if (!toolName) {
+    return {
+      responses: [
+        `E2E activity phase reply unavailable: no ${STEER_TOOL_NAME_PREFIX} tool advertised.`,
+      ],
+    };
+  }
+  let invocation = 0;
+  return {
+    responses: [''],
+    resolveInvocation: async () => {
+      invocation += 1;
+      if (invocation === 1) {
+        return {
+          response: '',
+          toolCalls: [
+            {
+              id: `call_e2e_activity_phase_alpha_${label}`,
+              name: toolName,
+              args: { fact: `activity phase alpha ${label}` },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      if (invocation === 2) {
+        return {
+          response: '',
+          toolCalls: [
+            {
+              id: `call_e2e_activity_phase_beta_${label}`,
+              name: toolName,
+              args: { fact: `activity phase beta ${label}` },
+              type: 'tool_call',
+            },
+          ],
+        };
+      }
+      return { response: `${ACTIVITY_PHASE_FINAL_TEXT} ${label}` };
+    },
+  };
+}
+
+/**
+ * Pause a real agent run at the ask_user_question tool. The resume controller
+ * rebuilds the graph with an empty input-message list, so the test hook selects
+ * its ordinary mock reply for the resumed model turn. This deliberately tests
+ * the production checkpoint/resume seam rather than simulating a pause in the
+ * browser fixture.
+ */
+function askUserQuestionResponses(label, toolNames) {
+  if (!toolNames.has(ASK_USER_QUESTION_TOOL_NAME)) {
+    return {
+      responses: [
+        `E2E ask user question unavailable: ${ASK_USER_QUESTION_TOOL_NAME} was not advertised.`,
+      ],
+    };
+  }
+  return {
+    responses: [''],
+    toolCalls: [
+      {
+        id: `call_e2e_ask_user_question_${label}`,
+        name: ASK_USER_QUESTION_TOOL_NAME,
+        args: {
+          questions: [
+            {
+              id: 'environment',
+              question: `Which environment should Bombadil use for ${label}?`,
+              description:
+                'This deterministic pause exercises the HITL answer and resume lifecycle.',
+              options: [
+                { label: 'Staging', value: 'staging' },
+                { label: 'Production', value: 'production' },
+              ],
+            },
+          ],
+        },
+        type: 'tool_call',
+      },
+    ],
+  };
+}
+
 function findLastToolMessageText(messages, requiredToken) {
   for (let index = (messages ?? []).length - 1; index >= 0; index--) {
     const message = messages[index];
@@ -1420,6 +1550,25 @@ function parseHandoffScript(text) {
         error: `script.routes[${index}].targetTools must be an array of non-empty strings`,
       };
     }
+    if (route.targetToolCall != null) {
+      const targetToolCall = route.targetToolCall;
+      if (
+        typeof targetToolCall !== 'object' ||
+        Array.isArray(targetToolCall) ||
+        typeof targetToolCall.id !== 'string' ||
+        targetToolCall.id === '' ||
+        typeof targetToolCall.name !== 'string' ||
+        targetToolCall.name === '' ||
+        typeof targetToolCall.args !== 'object' ||
+        targetToolCall.args == null ||
+        Array.isArray(targetToolCall.args) ||
+        typeof targetToolCall.outputIncludes !== 'string'
+      ) {
+        return {
+          error: `script.routes[${index}].targetToolCall must contain an id, name, args object, and outputIncludes`,
+        };
+      }
+    }
 
     const args = route.args ?? {};
     let inferredReceipt = null;
@@ -1438,6 +1587,7 @@ function parseHandoffScript(text) {
       receipt: route.receipt ?? inferredReceipt,
       targetInstructions: route.targetInstructions,
       targetTools: route.targetTools ?? [],
+      targetToolCall: route.targetToolCall,
     });
   }
 
@@ -1625,8 +1775,13 @@ function deferredHitlInvocationResponse({ graph, messages, options, runManager }
           id: askCallId,
           name: ASK_USER_QUESTION_NAME,
           args: {
-            question: `Continue deferred schema check ${label}?`,
-            options: [{ label: `Continue ${label}`, value: `continue-${label}` }],
+            questions: [
+              {
+                id: 'confirmation',
+                question: `Continue deferred schema check ${label}?`,
+                options: [{ label: `Continue ${label}`, value: `continue-${label}` }],
+              },
+            ],
           },
           type: 'tool_call',
         },
@@ -1864,6 +2019,36 @@ function buildHandoffResponses(graph, parsed) {
               receptionFailures.join('; '),
           };
         }
+
+        const targetToolCall = incomingRoute.targetToolCall;
+        if (targetToolCall) {
+          const toolResult = findToolMessage(messages, targetToolCall.id);
+          if (!toolResult) {
+            return {
+              response: '',
+              toolCalls: [
+                {
+                  id: targetToolCall.id,
+                  name: targetToolCall.name,
+                  args: targetToolCall.args,
+                  type: 'tool_call',
+                },
+              ],
+            };
+          }
+
+          const output = getContentText(toolResult.content);
+          if (!output.includes(targetToolCall.outputIncludes)) {
+            return {
+              response:
+                `E2E handoff target tool failed ${script.label}: agent=${agentId}; ` +
+                `expected=${targetToolCall.outputIncludes}; received=${output || '(empty)'}`,
+            };
+          }
+          return {
+            response: `E2E handoff tool complete ${script.label}: agent=${agentId}`,
+          };
+        }
       }
 
       const outgoingRoutes = script.routes.filter((route) => route.from === agentId);
@@ -1937,6 +2122,16 @@ function resolveResponses({ graph, messages, text, toolNames }) {
   const activityLabel = getMarkerValue(text, ACTIVITY_REPLY_MARKER);
   if (activityLabel) {
     return activityReplyResponses(activityLabel, toolNames);
+  }
+
+  const activityPhaseLabel = getMarkerValue(text, ACTIVITY_PHASE_REPLY_MARKER);
+  if (activityPhaseLabel) {
+    return activityPhaseReplyResponses(activityPhaseLabel, toolNames);
+  }
+
+  const askUserQuestionLabel = getMarkerValue(text, ASK_USER_QUESTION_MARKER);
+  if (askUserQuestionLabel) {
+    return askUserQuestionResponses(askUserQuestionLabel, toolNames);
   }
 
   if (text.includes(ASSERT_AGENT_CONTEXT_MARKER)) {
