@@ -1,3 +1,0 @@
-merge_status=1
-upstream_sha=5ff282f9006c436e561de1afd39a481bea1ef0d8
-dbm_head_before_merge=02baeeedbb619f7c0388645ddde0aa8701d1c8d3

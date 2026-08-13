@@ -1,9 +1,0 @@
-api/package.json
-api/server/services/Endpoints/agents/initialize.js
-api/server/services/Endpoints/agents/initialize.spec.js
-api/server/services/MCP.js
-api/server/services/MCP.spec.js
-e2e/specs/mock/subagent-results.spec.ts
-package-lock.json
-packages/api/package.json
-packages/api/src/mcp/connection.ts
