@@ -44,24 +44,6 @@ jobs:
             packages/api/src/mcp/connection.ts
 
           rm -rf .dbm-merge-report
-          git rm .github/workflows/dbm-upstream-merge-builder.yml
-
-      - name: Update persistent DBM validation workflow
-        shell: python
-        run: |
-          from pathlib import Path
-
-          path = Path('.github/workflows/dbm-memory-pr.yml')
-          text = path.read_text()
-          old = '      - run: npm run build:api\n'
-          new = (
-              '      - run: npm run build:data-provider\n'
-              '      - run: npm run build:data-schemas\n'
-              '      - run: npm run build:api\n'
-          )
-          if old not in text:
-              raise SystemExit('Expected legacy DBM build step was not found')
-          path.write_text(text.replace(old, new, 1))
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -87,6 +69,6 @@ jobs:
 
       - name: Commit validated merge resolution
         run: |
-          git add -A
+          git add -A -- ':!.github/workflows'
           git commit -m "[resolve-bot] Resolve upstream conflicts and preserve validated DBM customizations"
           git push origin HEAD:integration/dbm-upstream-merge-2026-08-12
