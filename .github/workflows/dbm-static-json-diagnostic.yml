@@ -1,0 +1,83 @@
+name: DBM Static JSON Diagnostic
+
+on:
+  push:
+    branches:
+      - integration/dbm-upstream-merge-2026-08-12
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js 24.16.0
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24.16.0
+          cache: npm
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+          run_install: false
+
+      - name: Install root dependencies
+        run: npm ci --no-audit
+
+      - name: Install client dependencies
+        working-directory: client
+        run: pnpm install --frozen-lockfile
+
+      - name: Diagnose JSON discovery
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo '=== Git status after installs ==='
+          git status --short --untracked-files=all || true
+
+          echo '=== railway-build.schema.json locations ==='
+          find . \
+            -path './node_modules' -prune -o \
+            -path './client/node_modules' -prune -o \
+            -path './tests/node_modules' -prune -o \
+            -name 'railway-build.schema.json' -print
+
+          if [ -e specs/railway-build.schema.json ]; then
+            echo '=== specs/railway-build.schema.json metadata ==='
+            ls -la specs/railway-build.schema.json
+            realpath specs/railway-build.schema.json
+            git ls-files --error-unmatch specs/railway-build.schema.json >/dev/null 2>&1 && echo 'TRACKED=true' || echo 'TRACKED=false'
+            git check-ignore -v specs/railway-build.schema.json || true
+            echo '=== file contents ==='
+            cat specs/railway-build.schema.json
+          fi
+
+          echo '=== package.json files discovered by current workflow ==='
+          find . -name 'package.json' \
+            -not -path './node_modules/*' \
+            -not -path './client/node_modules/*' \
+            -not -path './tests/node_modules/*' \
+            -print
+
+          echo '=== tracked package.json files ==='
+          git ls-files 'package.json' '**/package.json'
+
+          echo '=== reproduce current JSON validation with source file markers ==='
+          JSON_FILES=$(find . -name 'package.json' \
+            -not -path './node_modules/*' \
+            -not -path './client/node_modules/*' \
+            -not -path './tests/node_modules/*')
+
+          for file in $JSON_FILES; do
+            echo "PRETTIER_INPUT=$file"
+            npx prettier --check "$file" || true
+          done
