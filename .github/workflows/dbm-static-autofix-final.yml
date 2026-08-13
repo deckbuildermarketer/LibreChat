@@ -37,16 +37,8 @@ jobs:
           path = Path('packages/api/src/memory/dbmGateway.ts')
           text = path.read_text()
 
-          old_aliases = """  const possible = Array.isArray(object)
-            ? object
-            : Array.isArray(object?.aliases)
-              ? object.aliases
-              : Array.isArray((object?.data as { aliases?: unknown } | undefined)?.aliases)
-                ? (object?.data as { aliases: unknown[] }).aliases
-                : Array.isArray(object?.data)
-                  ? object.data
-                  : [];
-          """
+          aliases_start = text.index('  const possible = Array.isArray(object)')
+          aliases_end = text.index('\n\n  const aliases:', aliases_start)
           new_aliases = """  let possible: unknown[] = [];
           if (Array.isArray(object)) {
             possible = object;
@@ -60,21 +52,13 @@ jobs:
             } else if (Array.isArray(envelope?.data)) {
               possible = envelope.data;
             }
-          }
-          """
+          }"""
+          text = text[:aliases_start] + new_aliases + text[aliases_end:]
 
-          old_id = """  return {
-            id:
-              typeof record.id === 'string'
-                ? record.id
-                : typeof record.memoryId === 'string'
-                  ? record.memoryId
-                  : undefined,
-            text: candidate.trim(),
-            score: typeof record.score === 'number' ? record.score : undefined,
-          };
-          """
-          new_id = """  let id: string | undefined;
+          recall_start = text.index('function readRecallText')
+          return_start = text.index('  return {\n    id:', recall_start)
+          return_end = text.index('\n  };', return_start) + len('\n  };')
+          new_return = """  let id: string | undefined;
           if (typeof record.id === 'string') {
             id = record.id;
           } else if (typeof record.memoryId === 'string') {
@@ -84,15 +68,8 @@ jobs:
             id,
             text: candidate.trim(),
             score: typeof record.score === 'number' ? record.score : undefined,
-          };
-          """
-
-          if old_aliases not in text:
-            raise SystemExit('Expected parseAliases nested ternary block was not found')
-          if old_id not in text:
-            raise SystemExit('Expected recall id nested ternary block was not found')
-
-          text = text.replace(old_aliases, new_aliases, 1).replace(old_id, new_id, 1)
+          };"""
+          text = text[:return_start] + new_return + text[return_end:]
           path.write_text(text)
 
       - name: Apply repository formatting and lint rules
