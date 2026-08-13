@@ -1,6 +1,5 @@
 import { logger } from '@librechat/data-schemas';
 import type { BaseMessage } from '@librechat/agents/langchain/messages';
-import { createRun as createBaseRun } from './run';
 import {
   extractDBMMemory,
   formatDBMMemoryForInjection,
@@ -13,6 +12,7 @@ import {
   type DBMMemoryAlias,
   type DBMMemoryContext,
 } from '~/memory/dbmGateway';
+import { createRun as createBaseRun } from './run';
 
 type CreateRunOptions = Parameters<typeof createBaseRun>[0];
 type CreateRunResult = Awaited<ReturnType<typeof createBaseRun>>;
