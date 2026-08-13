@@ -29,26 +29,36 @@ jobs:
       - name: Install dependencies
         run: npm ci --no-audit
 
-      - name: Apply repository formatting rules
-        run: |
-          npx prettier --write api/server/services/Endpoints/agents/initialize.spec.js
-          npm run sort-imports -- packages/api/src/app/metrics.ts packages/api/src/rum/proxy.ts
-
-      - name: Commit formatting fixes
+      - name: Normalize imports in PR-changed source files
         shell: bash
         run: |
           set -euo pipefail
-          git add \
-            api/server/services/Endpoints/agents/initialize.spec.js \
-            packages/api/src/app/metrics.ts \
-            packages/api/src/rum/proxy.ts
+          BASE_SHA="19bc7948c85fe5a53062429fb79c4cd4deb510db"
+          mapfile -d '' -t CHANGED_FILES < <(
+            git diff -z --name-only --diff-filter=ACMRTUXB "$BASE_SHA" HEAD |
+              grep -zE '^(api|client|packages)/.*\.(js|jsx|ts|tsx)$' || true
+          )
+
+          if [[ ${#CHANGED_FILES[@]} -eq 0 ]]; then
+            echo "No changed JS/TS source files found."
+            exit 0
+          fi
+
+          echo "Checking ${#CHANGED_FILES[@]} changed source files."
+          node scripts/sort-imports.mts "${CHANGED_FILES[@]}"
+
+      - name: Commit import-order fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add api client packages
 
           if git diff --cached --quiet; then
-            echo "No formatting changes were necessary."
+            echo "No import-order changes were necessary."
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "fix: apply static check formatting"
+          git commit -m "fix: normalize imports for static checks"
           git push origin HEAD:integration/dbm-upstream-merge-2026-08-12
