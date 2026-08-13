@@ -392,7 +392,9 @@ export async function createRun(options: CreateRunOptions): Promise<CreateRunRes
   }
 
   const mutableRun = run as typeof run & {
-    processStream: (...args: Parameters<typeof run.processStream>) => ReturnType<typeof run.processStream>;
+    processStream: (
+      ...args: Parameters<typeof run.processStream>
+    ) => ReturnType<typeof run.processStream>;
   };
   const originalProcessStream = run.processStream.bind(run);
   let extractionScheduled = false;

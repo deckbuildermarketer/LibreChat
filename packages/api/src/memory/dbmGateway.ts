@@ -70,17 +70,9 @@ function getGatewayConfig() {
     baseUrl: trimTrailingSlash(process.env.DBM_MEMORY_GATEWAY_URL?.trim() || ''),
     apiKey: process.env.DBM_MEMORY_GATEWAY_API_KEY?.trim() || '',
     timeoutMs: envNumber('DBM_MEMORY_TIMEOUT_MS', DEFAULT_TIMEOUT_MS, 100),
-    aliasCacheTtlMs: envNumber(
-      'DBM_MEMORY_ALIAS_CACHE_TTL_MS',
-      DEFAULT_ALIAS_CACHE_TTL_MS,
-      1000,
-    ),
+    aliasCacheTtlMs: envNumber('DBM_MEMORY_ALIAS_CACHE_TTL_MS', DEFAULT_ALIAS_CACHE_TTL_MS, 1000),
     recallLimit: envNumber('DBM_MEMORY_RECALL_LIMIT', DEFAULT_RECALL_LIMIT, 1),
-    maxInjectedChars: envNumber(
-      'DBM_MEMORY_MAX_INJECTED_CHARS',
-      DEFAULT_MAX_INJECTED_CHARS,
-      500,
-    ),
+    maxInjectedChars: envNumber('DBM_MEMORY_MAX_INJECTED_CHARS', DEFAULT_MAX_INJECTED_CHARS, 500),
     aliasesPath: normalizePath(process.env.DBM_MEMORY_ALIASES_PATH, '/v1/admin/aliases'),
     recallPath: normalizePath(process.env.DBM_MEMORY_RECALL_PATH, '/v1/recall'),
     extractPath: normalizePath(process.env.DBM_MEMORY_EXTRACT_PATH, '/v1/extract'),
@@ -152,19 +144,21 @@ async function gatewayRequest<T>(
 }
 
 function parseAliases(payload: unknown): DBMMemoryAlias[] {
-  const object = payload as
-    | { aliases?: unknown; data?: unknown }
-    | DBMMemoryAlias[]
-    | undefined;
-  const possible = Array.isArray(object)
-    ? object
-    : Array.isArray(object?.aliases)
-      ? object.aliases
-      : Array.isArray((object?.data as { aliases?: unknown } | undefined)?.aliases)
-        ? (object?.data as { aliases: unknown[] }).aliases
-        : Array.isArray(object?.data)
-          ? object.data
-          : [];
+  const object = payload as { aliases?: unknown; data?: unknown } | DBMMemoryAlias[] | undefined;
+  let possible: unknown[] = [];
+  if (Array.isArray(object)) {
+    possible = object;
+  } else {
+    const envelope = object as { aliases?: unknown; data?: unknown } | undefined;
+    const dataAliases = (envelope?.data as { aliases?: unknown } | undefined)?.aliases;
+    if (Array.isArray(envelope?.aliases)) {
+      possible = envelope.aliases;
+    } else if (Array.isArray(dataAliases)) {
+      possible = dataAliases;
+    } else if (Array.isArray(envelope?.data)) {
+      possible = envelope.data;
+    }
+  }
 
   const aliases: DBMMemoryAlias[] = [];
   for (const item of possible) {
@@ -200,7 +194,11 @@ export async function getDBMMemoryAliases(forceRefresh = false): Promise<DBMMemo
   }
 
   aliasRequest = (async () => {
-    const payload = await gatewayRequest<unknown>(config.aliasesPath, { method: 'GET' }, 'alias lookup');
+    const payload = await gatewayRequest<unknown>(
+      config.aliasesPath,
+      { method: 'GET' },
+      'alias lookup',
+    );
     const aliases = parseAliases(payload);
     aliasCache = {
       aliases,
@@ -229,13 +227,14 @@ function readRecallText(item: unknown): DBMMemoryRecall | undefined {
   if (typeof candidate !== 'string') {
     return undefined;
   }
+  let id: string | undefined;
+  if (typeof record.id === 'string') {
+    id = record.id;
+  } else if (typeof record.memoryId === 'string') {
+    id = record.memoryId;
+  }
   return {
-    id:
-      typeof record.id === 'string'
-        ? record.id
-        : typeof record.memoryId === 'string'
-          ? record.memoryId
-          : undefined,
+    id,
     text: candidate.trim(),
     score: typeof record.score === 'number' ? record.score : undefined,
   };
@@ -253,13 +252,22 @@ export function parseDBMMemoryRecall(payload: unknown): {
     record.data != null && typeof record.data === 'object'
       ? (record.data as Record<string, unknown>)
       : undefined;
-  const possible = [record.memories, record.results, data?.memories, data?.results, record.data].find(
-    Array.isArray,
-  ) as unknown[] | undefined;
-  const memories = (possible ?? []).map(readRecallText).filter((item): item is DBMMemoryRecall => !!item);
-  const formattedCandidate = [record.formatted, record.context, data?.formatted, data?.context].find(
-    (value) => typeof value === 'string' && value.trim().length > 0,
-  );
+  const possible = [
+    record.memories,
+    record.results,
+    data?.memories,
+    data?.results,
+    record.data,
+  ].find(Array.isArray) as unknown[] | undefined;
+  const memories = (possible ?? [])
+    .map(readRecallText)
+    .filter((item): item is DBMMemoryRecall => !!item);
+  const formattedCandidate = [
+    record.formatted,
+    record.context,
+    data?.formatted,
+    data?.context,
+  ].find((value) => typeof value === 'string' && value.trim().length > 0);
   return {
     memories,
     formatted: typeof formattedCandidate === 'string' ? formattedCandidate.trim() : undefined,
