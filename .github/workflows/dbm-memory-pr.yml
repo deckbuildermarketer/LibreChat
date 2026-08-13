@@ -5,16 +5,35 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: dbm-memory-pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   validate-memory:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - name: Use Node.js 24.16.0
+        uses: actions/setup-node@v5
         with:
           node-version: 24.16.0
           cache: npm
-      - run: npm ci --no-audit
-      - run: npm run build:api
-      - run: npm --workspace=packages/api run test:ci -- --runInBand --runTestsByPath src/memory/dbmGateway.spec.ts src/agents/dbmMemoryRun.spec.ts src/agents/subagents.spec.ts
+      - name: Install dependencies
+        run: npm ci --no-audit
+      - name: Build data-provider
+        run: npm run build:data-provider
+      - name: Build data-schemas
+        run: npm run build:data-schemas
+      - name: Build API
+        run: npm run build:api
+      - name: Run DBM memory and subagent regression tests
+        run: >-
+          npm --workspace=packages/api run test:ci -- --runInBand --runTestsByPath
+          src/memory/dbmGateway.spec.ts
+          src/agents/dbmMemoryRun.spec.ts
+          src/agents/subagents.spec.ts
