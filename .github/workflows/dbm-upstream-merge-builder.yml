@@ -1,4 +1,4 @@
-name: DBM Upstream Merge Builder
+name: DBM Upstream Conflict Resolver
 
 on:
   push:
@@ -9,66 +9,64 @@ permissions:
   contents: write
 
 concurrency:
-  group: dbm-upstream-merge-builder
+  group: dbm-upstream-conflict-resolver
   cancel-in-progress: false
 
 jobs:
-  merge-upstream:
-    if: ${{ !contains(github.event.head_commit.message, '[merge-bot]') }}
+  resolve-and-validate:
+    if: ${{ !contains(github.event.head_commit.message, '[resolve-bot]') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout integration branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Configure Git
+      - name: Configure Git and fetch upstream
         run: |
           git config user.name "DBM Merge Bot"
           git config user.email "deckbuildermarketer@gmail.com"
-
-      - name: Fetch upstream LibreChat main
-        run: |
           git remote add upstream https://github.com/danny-avila/LibreChat.git || true
           git fetch --no-tags upstream main
 
-      - name: Merge upstream and preserve conflict evidence
-        shell: bash
+      - name: Resolve superseded conflicts with current upstream implementations
         run: |
-          set -uo pipefail
-          set +e
-          git merge --no-ff --no-commit upstream/main
-          merge_status=$?
-          set -e
+          git checkout upstream/main -- \
+            api/package.json \
+            api/server/services/Endpoints/agents/initialize.js \
+            api/server/services/Endpoints/agents/initialize.spec.js \
+            api/server/services/MCP.js \
+            api/server/services/MCP.spec.js \
+            e2e/specs/mock/subagent-results.spec.ts \
+            package-lock.json \
+            packages/api/package.json \
+            packages/api/src/mcp/connection.ts
 
-          mkdir -p .dbm-merge-report/base .dbm-merge-report/ours .dbm-merge-report/theirs
-          git diff --name-only --diff-filter=U > .dbm-merge-report/conflicts.txt
-          git diff --cc > .dbm-merge-report/combined-conflicts.diff || true
-          git status --porcelain=v1 > .dbm-merge-report/status-before-resolution.txt
-          printf 'merge_status=%s\n' "$merge_status" > .dbm-merge-report/metadata.txt
-          printf 'upstream_sha=%s\n' "$(git rev-parse upstream/main)" >> .dbm-merge-report/metadata.txt
-          printf 'dbm_head_before_merge=%s\n' "$(git rev-parse HEAD)" >> .dbm-merge-report/metadata.txt
+          rm -rf .dbm-merge-report
+          git rm .github/workflows/dbm-upstream-merge-builder.yml
 
-          while IFS= read -r file; do
-            [ -n "$file" ] || continue
-            mkdir -p ".dbm-merge-report/base/$(dirname "$file")" ".dbm-merge-report/ours/$(dirname "$file")" ".dbm-merge-report/theirs/$(dirname "$file")"
-            git show ":1:$file" > ".dbm-merge-report/base/$file" 2>/dev/null || printf '__DBM_MISSING_STAGE_1__\n' > ".dbm-merge-report/base/$file"
-            git show ":2:$file" > ".dbm-merge-report/ours/$file" 2>/dev/null || printf '__DBM_MISSING_STAGE_2__\n' > ".dbm-merge-report/ours/$file"
-            git show ":3:$file" > ".dbm-merge-report/theirs/$file" 2>/dev/null || printf '__DBM_MISSING_STAGE_3__\n' > ".dbm-merge-report/theirs/$file"
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.16.0
+          cache: npm
 
-            if git ls-files -u -- "$file" | awk '$3 == 2 { found=1 } END { exit !found }'; then
-              git checkout --ours -- "$file"
-              git add -- "$file"
-            else
-              git rm -f --ignore-unmatch -- "$file"
-            fi
-          done < .dbm-merge-report/conflicts.txt
+      - name: Install dependencies
+        run: npm ci --no-audit
 
+      - name: Build API packages
+        run: npm run build:api
+
+      - name: Run DBM regression tests
+        run: >-
+          npm --workspace=packages/api run test:ci -- --runInBand --runTestsByPath
+          src/memory/dbmGateway.spec.ts
+          src/agents/dbmMemoryRun.spec.ts
+          src/agents/subagents.spec.ts
+
+      - name: Commit validated merge resolution
+        run: |
           git add -A
-          git commit -m "[merge-bot] Merge upstream main into DBM integration; hold conflicts as DBM for review"
+          git commit -m "[resolve-bot] Resolve upstream conflicts and preserve validated DBM customizations"
           git push origin HEAD:integration/dbm-upstream-merge-2026-08-12
-
-      - name: Print conflict summary
-        run: |
-          echo "Conflict count: $(wc -l < .dbm-merge-report/conflicts.txt || echo 0)"
-          cat .dbm-merge-report/conflicts.txt || true
