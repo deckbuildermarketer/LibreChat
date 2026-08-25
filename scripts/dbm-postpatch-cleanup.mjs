@@ -33,4 +33,20 @@ for (const path of [
   writeFileSync(path, content);
 }
 
+// Upstream's graph-budget regression used fixed fixture sizes chosen for the default
+// 50-node ceiling. DBM intentionally raises that ceiling to 300, so keep the test's
+// semantics invariant by deriving a first batch and a one-node-overflow second batch
+// from MAX_SUBAGENT_GRAPH_NODES instead of hard-coding 32 + 20.
+{
+  const path = 'packages/api/src/agents/discovery.spec.ts';
+  let content = readFileSync(path, 'utf8');
+  content = replaceOnce(
+    content,
+    `    const firstMemberIds = Array.from({ length: 32 }, (_, index) => \`missing_first_\${index}\`);\n    const overflowMemberIds = Array.from({ length: 20 }, (_, index) => \`missing_overflow_\${index}\`);`,
+    `    const firstMemberCount = Math.ceil(MAX_SUBAGENT_GRAPH_NODES / 2);\n    const overflowMemberCount = MAX_SUBAGENT_GRAPH_NODES - firstMemberCount + 1;\n    const firstMemberIds = Array.from(\n      { length: firstMemberCount },\n      (_, index) => \`missing_first_\${index}\`,\n    );\n    const overflowMemberIds = Array.from(\n      { length: overflowMemberCount },\n      (_, index) => \`missing_overflow_\${index}\`,\n    );`,
+    'graph budget regression fixture scales with configured limit',
+  );
+  writeFileSync(path, content);
+}
+
 console.log('DBM integration cleanup applied successfully.');
