@@ -1,0 +1,85 @@
+name: DBM Upstream Integration
+
+on:
+  push:
+    branches:
+      - integration/dbm-upstream-2026-08-25
+    paths:
+      - .github/workflows/dbm-upstream-integration.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dbm-upstream-integration-2026-08-25
+  cancel-in-progress: false
+
+jobs:
+  integrate-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout integration branch
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js 24.16.0
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24.16.0
+          cache: npm
+
+      - name: Fetch production reference
+        run: git fetch origin secondary:refs/remotes/origin/secondary --depth=1
+
+      - name: Apply DBM compatibility layer
+        run: node scripts/dbm-integrate-upstream.mjs
+
+      - name: Install dependencies
+        run: npm ci --no-audit
+
+      - name: Check changed-source lint
+        run: >-
+          npx eslint
+          packages/api/src/memory/dbmGateway.ts
+          packages/api/src/memory/dbmGateway.spec.ts
+          packages/api/src/agents/dbmMemoryRun.ts
+          packages/api/src/agents/dbmMemoryRun.spec.ts
+          packages/api/src/agents/discovery.ts
+          api/server/controllers/agents/openai.js
+          api/server/controllers/agents/responses.js
+
+      - name: Build complete frontend and package graph
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: npm run frontend
+
+      - name: Run DBM memory regressions
+        run: >-
+          npm --workspace=packages/api run test:ci -- --runInBand --runTestsByPath
+          src/memory/dbmGateway.spec.ts
+          src/agents/dbmMemoryRun.spec.ts
+
+      - name: Run shared subagent discovery regressions
+        run: >-
+          npm --workspace=packages/api run test:ci -- --runInBand --runTestsByPath
+          src/agents/discovery.spec.ts
+
+      - name: Validate Railway Dockerfile fail-fast contract
+        run: |
+          grep -F 'RUN set -e;' Dockerfile
+          grep -F 'test -f /app/client/dist/index.html' Dockerfile
+          test -f client/dist/index.html
+
+      - name: Remove one-shot integration machinery
+        run: git rm scripts/dbm-integrate-upstream.mjs .github/workflows/dbm-upstream-integration.yml
+
+      - name: Commit validated integration
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'Sync latest LibreChat upstream and preserve DBM customizations'
+          git push origin HEAD:integration/dbm-upstream-2026-08-25
