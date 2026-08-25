@@ -34,7 +34,9 @@ jobs:
         run: git fetch origin secondary:refs/remotes/origin/secondary --depth=1
 
       - name: Apply DBM compatibility layer
-        run: node scripts/dbm-integrate-upstream.mjs
+        run: |
+          node scripts/dbm-integrate-upstream.mjs
+          node scripts/dbm-postpatch-cleanup.mjs
 
       - name: Install dependencies
         run: npm ci --no-audit
@@ -73,7 +75,11 @@ jobs:
           test -f client/dist/index.html
 
       - name: Remove one-shot integration machinery
-        run: git rm scripts/dbm-integrate-upstream.mjs .github/workflows/dbm-upstream-integration.yml
+        run: >-
+          git rm
+          scripts/dbm-integrate-upstream.mjs
+          scripts/dbm-postpatch-cleanup.mjs
+          .github/workflows/dbm-upstream-integration.yml
 
       - name: Commit validated integration
         run: |
