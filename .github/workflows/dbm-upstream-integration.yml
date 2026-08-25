@@ -49,6 +49,7 @@ jobs:
           packages/api/src/agents/dbmMemoryRun.ts
           packages/api/src/agents/dbmMemoryRun.spec.ts
           packages/api/src/agents/discovery.ts
+          packages/api/src/agents/discovery.spec.ts
           api/server/controllers/agents/openai.js
           api/server/controllers/agents/responses.js
 
