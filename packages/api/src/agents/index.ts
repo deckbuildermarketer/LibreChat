@@ -44,6 +44,8 @@ export * from './skillConfigurable';
 export * from './skillFiles';
 export * from './codeFilesSession';
 export * from './run';
+/** DBM: external Mem0-compatible memory wrapper around canonical createRun. */
+export { createRun } from './dbmMemoryRun';
 export * from './testHook';
 export * from './tools';
 export * from './validation';

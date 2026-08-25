@@ -1440,8 +1440,16 @@ describe('resolveSubagentGraphs', () => {
   });
 
   it('counts distinct failed attempts against the request-wide member limit', async () => {
-    const firstMemberIds = Array.from({ length: 32 }, (_, index) => `missing_first_${index}`);
-    const overflowMemberIds = Array.from({ length: 20 }, (_, index) => `missing_overflow_${index}`);
+    const firstMemberCount = Math.ceil(MAX_SUBAGENT_GRAPH_NODES / 2);
+    const overflowMemberCount = MAX_SUBAGENT_GRAPH_NODES - firstMemberCount + 1;
+    const firstMemberIds = Array.from(
+      { length: firstMemberCount },
+      (_, index) => `missing_first_${index}`,
+    );
+    const overflowMemberIds = Array.from(
+      { length: overflowMemberCount },
+      (_, index) => `missing_overflow_${index}`,
+    );
     const primaryConfig = makeConfig('A') as GraphSubagentHostConfig;
     primaryConfig.subagents = {
       enabled: true,

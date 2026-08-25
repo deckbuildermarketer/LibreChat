@@ -3429,13 +3429,13 @@ export function splitToolCallName(
 }
 
 /** Maximum explicit subagent hops allowed from any root agent at runtime. */
-export const MAX_SUBAGENT_DEPTH = 5;
+export const MAX_SUBAGENT_DEPTH = 10;
 
-/** Maximum unique explicit subagent targets that may be loaded at runtime. */
-export const MAX_SUBAGENT_GRAPH_NODES = 50;
+/** DBM: larger bounded graph for Scout -> Director -> Program -> Client routing. */
+export const MAX_SUBAGENT_GRAPH_NODES = 300;
 
-/** Maximum expanded SubagentConfig entries embedded into one run request. */
-export const MAX_SUBAGENT_RUN_CONFIGS = 100;
+/** DBM: keep the expanded run envelope aligned with the graph-node budget. */
+export const MAX_SUBAGENT_RUN_CONFIGS = 300;
 
 export enum LocalStorageKeys {
   /** Key for the admin defined App Title */

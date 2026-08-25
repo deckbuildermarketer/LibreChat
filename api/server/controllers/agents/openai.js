@@ -44,6 +44,7 @@ const {
   contentFilterUninspectableResponse,
   discoverConnectedAgents,
   resolveSubagentGraphs,
+  resolveLegacySubagentAgentIds,
   getBlockedOpaqueFileField,
   getContentTraversalFragments,
   isContentTraversalProtected,
@@ -529,7 +530,12 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
       subagentsCapabilityEnabled &&
       primaryConfig.subagents?.enabled === true &&
       (primaryConfig.subagents.graphs?.length ?? 0) > 0;
-    if (primaryConfig.edges?.length || primaryHasGraphSubagents) {
+    const primaryHasLegacySubagents =
+      subagentsCapabilityEnabled &&
+      primaryConfig.subagents?.enabled === true &&
+      Array.isArray(primaryConfig.subagents.agent_ids) &&
+      primaryConfig.subagents.agent_ids.length > 0;
+    if (primaryConfig.edges?.length || primaryHasGraphSubagents || primaryHasLegacySubagents) {
       const modelsConfig = await getModelsConfig(req);
       const discoveryParams = {
         req,
@@ -611,6 +617,19 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
           },
           discoveryDeps,
         );
+      }
+      if (subagentsCapabilityEnabled) {
+        const legacyMCPAuthMap = await resolveLegacySubagentAgentIds(
+          {
+            ...discoveryParams,
+            rootConfigs: [primaryConfig, ...handoffAgentConfigs.values()],
+          },
+          discoveryDeps,
+        );
+        discoveredMCPAuthMap = {
+          ...(discoveredMCPAuthMap ?? {}),
+          ...(legacyMCPAuthMap ?? {}),
+        };
       }
     }
 

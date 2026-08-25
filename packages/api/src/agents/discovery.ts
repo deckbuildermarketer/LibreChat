@@ -3,6 +3,7 @@ import {
   ResourceType,
   PermissionBits,
   EModelEndpoint,
+  MAX_SUBAGENT_DEPTH,
   MAX_SUBAGENT_GRAPH_NODES,
 } from 'librechat-data-provider';
 import type {
@@ -367,6 +368,127 @@ export async function resolveSubagentGraphs(
       });
     }
     rootConfig.subagentGraphConfigs = resolvedGraphs;
+  }
+  return userMCPAuthMap;
+}
+
+/**
+ * DBM compatibility for persisted legacy `subagents.agent_ids` on OpenAI-compatible
+ * endpoints. Native LibreChat now owns the in-app lazy-subagent path and saved graph
+ * teams; this adapter only closes the remaining /v1 parity gap without restoring the
+ * retired DBM loader. Every referenced child passes the same resourceType + VIEW ACL,
+ * model validation, skill scoping, tool initialization, and capability wiring as the
+ * current shared discovery path.
+ */
+export async function resolveLegacySubagentAgentIds(
+  params: ResolveSubagentGraphsParams,
+  deps: DiscoverConnectedAgentsDeps,
+): Promise<Record<string, Record<string, string>> | undefined> {
+  const configById = new Map<string, InitializedAgent>();
+  for (const rootConfig of params.rootConfigs) {
+    configById.set(rootConfig.id, rootConfig);
+    for (const graph of rootConfig.subagentGraphConfigs ?? []) {
+      for (const memberConfig of graph.memberConfigs) {
+        configById.set(memberConfig.id, memberConfig);
+      }
+    }
+  }
+
+  const failedAgentIds = new Set<string>();
+  const loadedLegacyIds = new Set<string>();
+  const maxResolvedDepthById = new Map<string, number>();
+  let userMCPAuthMap: Record<string, Record<string, string>> | undefined;
+
+  const mergeAuth = (config: InitializedAgent): void => {
+    if (config.userMCPAuthMap) {
+      userMCPAuthMap = { ...userMCPAuthMap, ...config.userMCPAuthMap };
+    }
+  };
+  for (const config of configById.values()) {
+    mergeAuth(config);
+  }
+
+  const resolveConfig = async (
+    config: InitializedAgent & { subagentAgentConfigs?: InitializedAgent[] },
+    depth: number,
+    ancestors: ReadonlySet<string>,
+  ): Promise<void> => {
+    const previousDepth = maxResolvedDepthById.get(config.id);
+    if (previousDepth != null && previousDepth >= depth) {
+      return;
+    }
+    maxResolvedDepthById.set(config.id, depth);
+
+    if (config.subagents?.enabled !== true) {
+      config.subagentAgentConfigs ??= [];
+      return;
+    }
+
+    const childIds = Array.from(
+      new Set(
+        Array.isArray(config.subagents.agent_ids)
+          ? config.subagents.agent_ids.filter(
+              (id): id is string => typeof id === 'string' && id.length > 0 && id !== config.id,
+            )
+          : [],
+      ),
+    );
+
+    if (childIds.length > 0 && depth >= MAX_SUBAGENT_DEPTH) {
+      logger.warn('[resolveLegacySubagentAgentIds] Subagent depth limit exceeded', {
+        agentId: config.id,
+        depth,
+        maxSubagentDepth: MAX_SUBAGENT_DEPTH,
+        childCount: childIds.length,
+      });
+      throw new Error(
+        `Subagent graph exceeds the maximum depth of ${MAX_SUBAGENT_DEPTH} at agent ${config.id}.`,
+      );
+    }
+
+    const resolvedChildren: InitializedAgent[] = [];
+    for (const childId of childIds) {
+      if (ancestors.has(childId) || failedAgentIds.has(childId)) {
+        continue;
+      }
+
+      let childConfig = configById.get(childId);
+      if (!childConfig) {
+        if (loadedLegacyIds.size >= MAX_SUBAGENT_GRAPH_NODES) {
+          logger.warn('[resolveLegacySubagentAgentIds] Subagent graph node limit exceeded', {
+            agentId: config.id,
+            childId,
+            loadedSubagentCount: loadedLegacyIds.size,
+            maxSubagentGraphNodes: MAX_SUBAGENT_GRAPH_NODES,
+          });
+          throw new Error(
+            `Subagent graph exceeds the maximum of ${MAX_SUBAGENT_GRAPH_NODES} unique agents.`,
+          );
+        }
+
+        const resolved = await initializeReferencedAgent(childId, params, deps);
+        if (!resolved) {
+          failedAgentIds.add(childId);
+          continue;
+        }
+        childConfig = resolved.config;
+        loadedLegacyIds.add(childId);
+        configById.set(childId, childConfig);
+        mergeAuth(childConfig);
+      }
+      resolvedChildren.push(childConfig);
+    }
+
+    config.subagentAgentConfigs = resolvedChildren;
+    const nextAncestors = new Set(ancestors);
+    nextAncestors.add(config.id);
+    for (const childConfig of resolvedChildren) {
+      await resolveConfig(childConfig, depth + 1, nextAncestors);
+    }
+  };
+
+  for (const rootConfig of params.rootConfigs) {
+    await resolveConfig(rootConfig, 0, new Set<string>());
   }
   return userMCPAuthMap;
 }
