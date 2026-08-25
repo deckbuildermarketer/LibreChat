@@ -75,18 +75,21 @@ jobs:
           grep -F 'test -f /app/client/dist/index.html' Dockerfile
           test -f client/dist/index.html
 
-      - name: Remove one-shot integration machinery
-        run: >-
-          git rm
-          scripts/dbm-integrate-upstream.mjs
-          scripts/dbm-postpatch-cleanup.mjs
-          .github/workflows/dbm-upstream-integration.yml
+      - name: Prepare source-only validated commit
+        run: |
+          git rm scripts/dbm-integrate-upstream.mjs scripts/dbm-postpatch-cleanup.mjs
+          rm -f .github/workflows/dbm-memory-pr.yml
 
       - name: Commit validated integration
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
+          if git diff --cached --name-only | grep -q '^.github/workflows/'; then
+            echo 'Refusing to commit workflow files with the restricted Actions token.'
+            git diff --cached --name-only
+            exit 1
+          fi
           git diff --cached --check
           git commit -m 'Sync latest LibreChat upstream and preserve DBM customizations'
           git push origin HEAD:integration/dbm-upstream-2026-08-25
