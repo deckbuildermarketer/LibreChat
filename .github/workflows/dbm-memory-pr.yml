@@ -1,4 +1,4 @@
-name: DBM Memory PR
+name: DBM Integrations PR
 
 on:
   pull_request:
@@ -9,11 +9,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: dbm-memory-pr-${{ github.event.pull_request.number || github.ref }}
+  group: dbm-integrations-pr-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  validate-memory:
+  validate-dbm-integrations:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -36,6 +36,9 @@ jobs:
 
       - name: Build API
         run: npm run build:api
+
+      - name: Run DBM Executive blueprint tests
+        run: npm run test:config -- dbm-executive/blueprint.spec.js --runInBand
 
       - name: Run DBM memory and subagent regression tests
         run: >-
