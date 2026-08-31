@@ -22,6 +22,8 @@ export enum QueryKeys {
   tokenCount = 'tokenCount',
   availablePlugins = 'availablePlugins',
   startupConfig = 'startupConfig',
+  insights = 'insights',
+  insightsAccess = 'insightsAccess',
   assistants = 'assistants',
   assistant = 'assistant',
   agents = 'agents',
@@ -88,6 +90,12 @@ export enum QueryKeys {
   skillStates = 'skillStates',
   /* General user favorites */
   favorites = 'favorites',
+  /* Scheduled chats */
+  schedules = 'schedules',
+  schedule = 'schedule',
+  parentSubagents = 'parentSubagents',
+  subagentThread = 'subagentThread',
+  agentQueuedTurns = 'agentQueuedTurns',
 }
 
 // Dynamic query keys that require parameters
@@ -96,6 +104,9 @@ export const DynamicQueryKeys = {
 } as const;
 
 export enum MutationKeys {
+  subagentControl = 'subagentControl',
+  enqueueAgentQueuedTurn = 'enqueueAgentQueuedTurn',
+  cancelAgentQueuedTurn = 'cancelAgentQueuedTurn',
   updateLangfuseConnection = 'updateLangfuseConnection',
   testLangfuseConnection = 'testLangfuseConnection',
   createAgentApiKey = 'createAgentApiKey',
@@ -136,4 +147,8 @@ export enum MutationKeys {
   updateSkillNodeContent = 'updateSkillNodeContent',
   convoPin = 'convoPin',
   archiveAllConversations = 'archiveAllConversations',
+  createSchedule = 'createSchedule',
+  updateSchedule = 'updateSchedule',
+  deleteSchedule = 'deleteSchedule',
+  runSchedule = 'runSchedule',
 }

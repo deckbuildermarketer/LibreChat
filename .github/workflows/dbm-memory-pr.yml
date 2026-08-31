@@ -1,21 +1,21 @@
-name: DBM Memory PR
+name: DBM Fork Validation
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, secondary]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: dbm-memory-pr-${{ github.event.pull_request.number || github.ref }}
+  group: dbm-fork-validation-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  validate-memory:
+  validate-dbm:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v5
       - name: Use Node.js 24.16.0
@@ -31,9 +31,13 @@ jobs:
         run: npm run build:data-schemas
       - name: Build API
         run: npm run build:api
-      - name: Run DBM memory and subagent regression tests
+      - name: Run DBM memory and /v1 compatibility regressions
         run: >-
           npm --workspace=packages/api run test:ci -- --runInBand --runTestsByPath
           src/memory/dbmGateway.spec.ts
           src/agents/dbmMemoryRun.spec.ts
-          src/agents/subagents.spec.ts
+          src/agents/dbmV1Subagents.spec.ts
+      - name: Run upstream subagent discovery regressions
+        run: >-
+          npm --workspace=packages/api run test:ci -- --runInBand --runTestsByPath
+          src/agents/discovery.spec.ts

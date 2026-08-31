@@ -13,7 +13,7 @@ import {
   getMissingCustomUserVars,
   hasCustomUserVars,
   hasRuntimeUrlPlaceholders,
-  hasRuntimeBodyPlaceholders,
+  getMCPRequestScope,
   hasRuntimeContextPlaceholders,
   getRuntimeBodyPlaceholderFields,
   getMissingRuntimeBodyPlaceholderFields,
@@ -769,6 +769,26 @@ describe('hasRuntimeContextPlaceholders', () => {
     ).toBe(true);
   });
 
+  it('detects trusted runtime placeholders introduced by environment expansion', () => {
+    const envName = 'MCP_UTILS_RUNTIME_IDENTITY_TEST';
+    const previous = process.env[envName];
+    process.env[envName] = '{{LIBRECHAT_USER_ID}}';
+    try {
+      expect(
+        hasRuntimeContextPlaceholders({
+          source: 'yaml',
+          headers: { 'X-User': `\${${envName}}` },
+        }),
+      ).toBe(true);
+    } finally {
+      if (previous == null) {
+        delete process.env[envName];
+      } else {
+        process.env[envName] = previous;
+      }
+    }
+  });
+
   it('ignores custom user variable placeholders', () => {
     expect(
       hasRuntimeContextPlaceholders({
@@ -814,32 +834,52 @@ describe('hasRuntimeUrlPlaceholders', () => {
   });
 });
 
-describe('hasRuntimeBodyPlaceholders', () => {
+describe('getMCPRequestScope', () => {
   it('detects trusted runtime BODY placeholders across connection fields', () => {
     expect(
-      hasRuntimeBodyPlaceholders({
+      getMCPRequestScope({
         source: 'yaml',
         url: 'https://example.com/conversations/{{LIBRECHAT_BODY_CONVERSATIONID}}/mcp',
-      }),
+      }).requestScoped,
     ).toBe(true);
 
     expect(
-      hasRuntimeBodyPlaceholders({
+      getMCPRequestScope({
         source: 'config',
         headers: {
           'X-Message': '{{LIBRECHAT_BODY_MESSAGEID}}',
         },
-      }),
+      }).requestScoped,
     ).toBe(true);
+  });
+
+  it('tracks BODY placeholders introduced by environment expansion', () => {
+    const envName = 'MCP_UTILS_RUNTIME_BODY_TEST';
+    const previous = process.env[envName];
+    process.env[envName] = '{{LIBRECHAT_BODY_MESSAGEID}}';
+    try {
+      const config = {
+        source: 'yaml' as const,
+        headers: { 'X-Message': `\${${envName}}` },
+      };
+      expect(getMCPRequestScope(config).requestScoped).toBe(true);
+      expect(getRuntimeBodyPlaceholderFields(config)).toEqual(['messageId']);
+    } finally {
+      if (previous == null) {
+        delete process.env[envName];
+      } else {
+        process.env[envName] = previous;
+      }
+    }
   });
 
   it('ignores BODY placeholders in user-sourced configs', () => {
     expect(
-      hasRuntimeBodyPlaceholders({
+      getMCPRequestScope({
         source: 'user',
         dbId: 'server-123',
         url: 'https://example.com/{{LIBRECHAT_BODY_MESSAGEID}}/mcp',
-      }),
+      }).requestScoped,
     ).toBe(false);
   });
 
@@ -851,7 +891,7 @@ describe('hasRuntimeBodyPlaceholders', () => {
 
     expect(hasRuntimeContextPlaceholders(config)).toBe(false);
     expect(hasRuntimeUrlPlaceholders(config)).toBe(false);
-    expect(hasRuntimeBodyPlaceholders(config)).toBe(false);
+    expect(getMCPRequestScope(config).requestScoped).toBe(false);
     expect(getRuntimeBodyPlaceholderFields(config)).toEqual([]);
     expect(getMissingRuntimeBodyPlaceholderFields(config)).toEqual([]);
     expect(requiresEphemeralUserConnection(config)).toBe(false);
@@ -869,7 +909,7 @@ describe('hasRuntimeBodyPlaceholders', () => {
 
     expect(hasRuntimeContextPlaceholders(config)).toBe(false);
     expect(hasRuntimeUrlPlaceholders(config)).toBe(false);
-    expect(hasRuntimeBodyPlaceholders(config)).toBe(false);
+    expect(getMCPRequestScope(config).requestScoped).toBe(false);
     expect(getRuntimeBodyPlaceholderFields(config)).toEqual([]);
     expect(getMissingRuntimeBodyPlaceholderFields(config)).toEqual([]);
     expect(requiresEphemeralUserConnection(config)).toBe(false);

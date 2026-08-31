@@ -19,6 +19,10 @@ export default {
   //     lines: 57,
   //   },
   // },
+  // Download the in-memory MongoDB binary once, before workers fork: on a cold
+  // cache the parallel downloads race their final rename and fail whole suites.
+  globalSetup: '<rootDir>/jest.globalSetup.mjs',
+  setupFiles: ['<rootDir>/../../config/jest.setup.logging.cjs'],
   maxWorkers: '50%',
   restoreMocks: true,
   testTimeout: 15000,

@@ -164,6 +164,7 @@ describe('createEndpointsConfigService', () => {
               [EModelEndpoint.agents]: {
                 allowedProviders: ['openAI', 'anthropic'],
                 capabilities: [AgentCapabilities.execute_code],
+                maxSubagents: 20,
               },
             },
           }),
@@ -173,6 +174,7 @@ describe('createEndpointsConfigService', () => {
       const result = await getEndpointsConfig(fakeReq());
 
       expect(result?.[EModelEndpoint.agents]?.allowedProviders).toEqual(['openAI', 'anthropic']);
+      expect(result?.[EModelEndpoint.agents]?.maxSubagents).toBe(20);
     });
 
     it('exposes the deployment stateful environment allowlist', async () => {
@@ -184,7 +186,18 @@ describe('createEndpointsConfigService', () => {
           appConfig({
             endpoints: {
               [EModelEndpoint.agents]: {
-                statefulCodeSessions: { allowedEnvironments: ['user', 'agent-user'] },
+                statefulCodeSessions: {
+                  allowedEnvironments: ['user', 'agent-user'],
+                  environments: [
+                    {
+                      id: 'attached-vm',
+                      name: 'Attached VM',
+                      type: 'attached',
+                      baseURL: 'https://internal-code.example.com/v1',
+                      default: true,
+                    },
+                  ],
+                },
               },
             },
           }),
@@ -196,6 +209,14 @@ describe('createEndpointsConfigService', () => {
 
       expect(result?.[EModelEndpoint.agents]?.statefulCodeSessions).toEqual({
         allowedEnvironments: ['user', 'agent-user'],
+        environments: [
+          {
+            id: 'attached-vm',
+            name: 'Attached VM',
+            type: 'attached',
+            default: true,
+          },
+        ],
       });
     });
 

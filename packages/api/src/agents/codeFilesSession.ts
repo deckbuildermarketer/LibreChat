@@ -1,14 +1,18 @@
 import { Constants } from '@librechat/agents';
 import type { FileRefs, CodeEnvFile, ToolSessionMap, CodeSessionContext } from '@librechat/agents';
 import type { StatefulCodeEnvironment } from 'librechat-data-provider';
-import { resolveCodeExecutionContext, type CodeExecutionContext } from './execution';
+import {
+  getCodeExecutionRouteKey,
+  resolveCodeExecutionContext,
+  type CodeExecutionContext,
+} from './execution';
 
 /**
  * Minimal shape for an agent that may contribute primed code files to its
  * execution-profile partition. Both `InitializedAgent` and `RunAgent` satisfy it,
  * and the recursive walk in {@link buildInitialToolSessions} traverses
- * `subagentAgentConfigs` so nested subagents (which aren't in the top-level
- * `agentConfigs` map after pure-subagent pruning) still contribute.
+ * legacy child configs and graph-member configs so agents pruned from the
+ * top-level `agentConfigs` map still contribute.
  */
 export interface CodeFilesAgent {
   id?: string;
@@ -20,11 +24,30 @@ export interface CodeFilesAgent {
   statefulCodeEnvironment?: StatefulCodeEnvironment;
   subagentAgentConfigs?: CodeFilesAgent[];
   lazySubagentConfigs?: CodeFilesAgent[];
+  subagentGraphConfigs?: Array<{ memberConfigs: CodeFilesAgent[] }>;
 }
 
 export interface CodeExecutionProfileRoute {
   codeExecutionContext: CodeExecutionContext;
   codeSessionKeys: string[];
+}
+
+function enqueueCodeFilesChildren(
+  agent: CodeFilesAgent,
+  queue: CodeFilesAgent[],
+  visited: Set<CodeFilesAgent>,
+): void {
+  for (const child of [
+    ...(agent.subagentAgentConfigs ?? []),
+    ...(agent.lazySubagentConfigs ?? []),
+  ]) {
+    if (child && !visited.has(child)) queue.push(child);
+  }
+  for (const graph of agent.subagentGraphConfigs ?? []) {
+    for (const member of graph.memberConfigs) {
+      if (member && !visited.has(member)) queue.push(member);
+    }
+  }
 }
 
 /** Collects the distinct Code API deployments used by a run and every
@@ -35,7 +58,7 @@ export function collectCodeExecutionProfileRoutes(
   scope?: { userId: string; conversationId?: string | null },
 ): CodeExecutionProfileRoute[] {
   const routes = new Map<
-    CodeExecutionContext['executionProfile'],
+    string,
     { codeExecutionContext: CodeExecutionContext; codeSessionKeys: Set<string> }
   >();
   const visited = new Set<CodeFilesAgent>();
@@ -59,19 +82,15 @@ export function collectCodeExecutionProfileRoutes(
           })
         : undefined);
     if (agent.codeEnvAvailable === true && context) {
-      const route = routes.get(context.executionProfile) ?? {
+      const routeKey = getCodeExecutionRouteKey(context);
+      const route = routes.get(routeKey) ?? {
         codeExecutionContext: context,
         codeSessionKeys: new Set<string>(),
       };
       route.codeSessionKeys.add(agent.codeSessionKey ?? context.codeSessionKey);
-      routes.set(context.executionProfile, route);
+      routes.set(routeKey, route);
     }
-    for (const child of [
-      ...(agent.subagentAgentConfigs ?? []),
-      ...(agent.lazySubagentConfigs ?? []),
-    ]) {
-      if (child && !visited.has(child)) queue.push(child);
-    }
+    enqueueCodeFilesChildren(agent, queue, visited);
   }
   return Array.from(routes.values(), (route) => ({
     codeExecutionContext: route.codeExecutionContext,
@@ -195,8 +214,8 @@ export function buildAgentInitialToolSessions(
  * profile partition; this helper never copies a pointer across partitions.
  *
  * **Walk order:** primary first, then `agentConfigs` (handoff/addedConvo)
- * in iteration order, then recurse into each config's
- * `subagentAgentConfigs` breadth-first. Order matters because when no
+ * in iteration order, then recurse through legacy children and graph members
+ * breadth-first. Order matters because when no
  * skill sessions exist, the FIRST agent's first file supplies the
  * representative `session_id` written to `Graph.sessions[EXECUTE_CODE]`.
  * `ToolNode` ultimately uses per-file `session_id`s for injection so
@@ -214,7 +233,7 @@ export function buildAgentInitialToolSessions(
  *   from the skill side is preserved).
  * @param agents - The complete set of code-execution-capable agents in
  *   the run. Caller passes `[primaryConfig, ...agentConfigs.values()]`;
- *   this function recurses into each one's `subagentAgentConfigs`.
+ *   this function recurses into every reachable subagent configuration.
  */
 export function buildInitialToolSessions(params: {
   skillSessions?: ToolSessionMap;
@@ -244,11 +263,7 @@ export function buildInitialToolSessions(params: {
     if (agent.primedCodeFiles && agent.primedCodeFiles.length > 0) {
       sessions = seedCodeFilesIntoSessions(agent.primedCodeFiles, sessions, sessionKey);
     }
-    if (agent.subagentAgentConfigs && agent.subagentAgentConfigs.length > 0) {
-      for (const child of agent.subagentAgentConfigs) {
-        if (child && !visited.has(child)) queue.push(child);
-      }
-    }
+    enqueueCodeFilesChildren(agent, queue, visited);
   }
   return sessions;
 }

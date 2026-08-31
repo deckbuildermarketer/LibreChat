@@ -279,6 +279,17 @@ describe('buildInitialToolSessions', () => {
     expect(names).toEqual(['mid.txt', 'nested.txt', 'top.txt']);
   });
 
+  it('includes graph-subagent members pruned from the top-level agent map', () => {
+    const member = agent('graph-member', [file('g1', 'sess-G', 'team.txt')]);
+    const primary = agent('primary');
+    primary.subagentGraphConfigs = [{ memberConfigs: [member] }];
+
+    const result = buildInitialToolSessions({ agents: [primary] });
+
+    const entry = result!.get(Constants.EXECUTE_CODE) as CodeSessionContext;
+    expect(entry.files!.map((item) => item.name)).toEqual(['team.txt']);
+  });
+
   it('preserves the skill side representative session_id when merging', () => {
     const skillSessions: ToolSessionMap = new Map();
     skillSessions.set(Constants.EXECUTE_CODE, {
@@ -519,6 +530,61 @@ describe('collectCodeExecutionProfileRoutes', () => {
         codeExecutionContext: statefulContext(parentKey),
         codeSessionKeys: [parentKey, childKey],
       },
+    ]);
+  });
+
+  it('includes execution routes used only by graph-subagent members', () => {
+    const graphKey = 'execute_code:stateful:v2:user:graph-member';
+    const graphContext = {
+      baseUrl: 'https://stateful.example.com/v1',
+      codeSessionKey: graphKey,
+      executionProfile: 'stateful' as const,
+      runtimeSessionHint: 'v2:user:graph-member',
+      statefulSessions: true,
+    };
+
+    const routes = collectCodeExecutionProfileRoutes([
+      {
+        id: 'parent',
+        codeEnvAvailable: false,
+        subagentGraphConfigs: [
+          {
+            memberConfigs: [
+              {
+                id: 'graph-member',
+                codeEnvAvailable: true,
+                codeExecutionContext: graphContext,
+                codeSessionKey: graphKey,
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+
+    expect(routes).toEqual([{ codeExecutionContext: graphContext, codeSessionKeys: [graphKey] }]);
+  });
+
+  it('keeps configured stateful deployments in separate routing namespaces', () => {
+    const context = (executionRouteKey: string, baseUrl: string) => ({
+      baseUrl,
+      codeSessionKey: `execute_code:stateful:${executionRouteKey}`,
+      executionProfile: 'stateful' as const,
+      executionRouteKey,
+      runtimeSessionHint: `v3:${executionRouteKey}:user:scope`,
+      statefulSessions: true,
+    });
+    const first = context('stateful:first', 'https://first.example/v1');
+    const second = context('stateful:second', 'https://second.example/v1');
+
+    const routes = collectCodeExecutionProfileRoutes([
+      { codeEnvAvailable: true, codeExecutionContext: first },
+      { codeEnvAvailable: true, codeExecutionContext: second },
+    ]);
+
+    expect(routes).toEqual([
+      { codeExecutionContext: first, codeSessionKeys: [first.codeSessionKey] },
+      { codeExecutionContext: second, codeSessionKeys: [second.codeSessionKey] },
     ]);
   });
 

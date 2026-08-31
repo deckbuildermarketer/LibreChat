@@ -1,16 +1,18 @@
-import React, { useMemo, useCallback, useRef, useState } from 'react';
+import React, { useMemo, useCallback, useEffect, useRef, useState } from 'react';
 import { Plus } from 'lucide-react';
 import isEqual from 'lodash/isEqual';
 import { Button, useToastContext } from '@librechat/client';
 import { useWatch, useForm, FormProvider } from 'react-hook-form';
 import { useGetModelsQuery } from 'librechat-data-provider/react-query';
 import {
-  Tools,
   MemoryScope,
   SystemRoles,
   ResourceType,
   EModelEndpoint,
+  LocalStorageKeys,
   PermissionBits,
+  removeCodeExecutionCaller,
+  resolveModelCatalogKey,
   resolveStatefulCodeEnvironment,
   isAssistantsEndpoint,
 } from 'librechat-data-provider';
@@ -25,10 +27,15 @@ import {
   useGetExpandedAgentByIdQuery,
   useUploadAgentAvatarMutation,
 } from '~/data-provider';
-import { createProviderOption, getDefaultAgentFormValues } from '~/utils';
+import {
+  createProviderOption,
+  getAvailableAgentSelection,
+  getDefaultAgentFormValues,
+} from '~/utils';
 import { useResourcePermissions } from '~/hooks/useResourcePermissions';
 import { useSelectAgent, useLocalize, useAuthContext } from '~/hooks';
 import { useAgentPanelContext } from '~/Providers/AgentPanelContext';
+import { resolveCapabilityTools } from './Tools/items/capabilities';
 import AgentPanelSkeleton from './AgentPanelSkeleton';
 import AdvancedPanel from './Advanced/AdvancedPanel';
 import { Panel, isEphemeralAgent } from '~/common';
@@ -77,6 +84,7 @@ export function composeAgentUpdatePayload(data: AgentForm, agent_id?: string | n
     hide_sequential_outputs,
     stateful_code_sessions,
     stateful_code_environment,
+    code_environment_id,
     recursion_limit,
     category,
     support_contact,
@@ -91,6 +99,8 @@ export function composeAgentUpdatePayload(data: AgentForm, agent_id?: string | n
    * execute_code is disabled so a stale opt-in can't silently reactivate later. */
   const normalizedStatefulCodeSessions =
     data.execute_code === true ? stateful_code_sessions : false;
+  const normalizedToolOptions =
+    data.execute_code === true ? tool_options : removeCodeExecutionCaller(tool_options);
   const normalizedStatefulCodeEnvironment = stateful_code_environment ?? 'user';
 
   const shouldResetAvatar =
@@ -115,10 +125,11 @@ export function composeAgentUpdatePayload(data: AgentForm, agent_id?: string | n
       hide_sequential_outputs,
       stateful_code_sessions: normalizedStatefulCodeSessions,
       stateful_code_environment: normalizedStatefulCodeEnvironment,
+      code_environment_id: agent_id ? code_environment_id : (code_environment_id ?? undefined),
       recursion_limit,
       category,
       support_contact,
-      tool_options,
+      tool_options: normalizedToolOptions,
       skills,
       skills_enabled,
       /** A hidden stale 'agent' scope must not survive disabling memory —
@@ -311,7 +322,15 @@ export default function AgentPanel() {
 
   const agentQuery = canEdit && expandedAgentQuery.data ? expandedAgentQuery : basicAgentQuery;
 
-  const models = useMemo(() => modelsQuery.data ?? {}, [modelsQuery.data]);
+  const modelsReady = modelsQuery.isFetchedAfterMount && !modelsQuery.isFetching;
+  const modelsError = modelsQuery.isFetchedAfterMount && !modelsQuery.isSuccess;
+  /** The models query is seeded with a static fallback config, so its entries only describe the
+   *  active server once the fetch issued on mount has resolved. Until then there is nothing
+   *  authoritative to offer, and an outright failure must not fall back to the seed either. */
+  const models = useMemo(
+    () => (modelsQuery.isFetchedAfterMount && !modelsError ? (modelsQuery.data ?? {}) : {}),
+    [modelsError, modelsQuery.isFetchedAfterMount, modelsQuery.data],
+  );
   const methods = useForm<AgentForm>({
     defaultValues: getDefaultAgentFormValues(defaultStatefulCodeEnvironment),
     mode: 'onChange',
@@ -326,6 +345,7 @@ export default function AgentPanel() {
     formState: { dirtyFields },
   } = methods;
   const [isAvatarUploadInFlight, setIsAvatarUploadInFlight] = useState(false);
+
   const uploadAvatarMutation = useUploadAgentAvatarMutation({
     onSuccess: (updatedAgent) => {
       showToast({ message: localize('com_ui_upload_agent_avatar') });
@@ -391,6 +411,56 @@ export default function AgentPanel() {
         .map((provider) => createProviderOption(provider)),
     [endpointsConfig, allowedProviders],
   );
+  useEffect(() => {
+    if (endpointsConfig == null || !modelsReady || !modelsQuery.isSuccess) {
+      return;
+    }
+
+    const storedProvider = localStorage.getItem(LocalStorageKeys.LAST_AGENT_PROVIDER) ?? '';
+    const storedModel = localStorage.getItem(LocalStorageKeys.LAST_AGENT_MODEL) ?? '';
+    const storedSelection = getAvailableAgentSelection({
+      provider: storedProvider,
+      model: storedModel,
+      providers,
+      models,
+    });
+
+    if (storedSelection.provider !== storedProvider) {
+      localStorage.removeItem(LocalStorageKeys.LAST_AGENT_PROVIDER);
+      localStorage.removeItem(LocalStorageKeys.LAST_AGENT_MODEL);
+    } else if (storedSelection.model !== storedModel) {
+      localStorage.removeItem(LocalStorageKeys.LAST_AGENT_MODEL);
+    }
+
+    if (current_agent_id || dirtyFields.provider === true || dirtyFields.model === true) {
+      return;
+    }
+
+    const selectedProviderOption = getValues('provider');
+    const selectedProvider =
+      (typeof selectedProviderOption === 'string'
+        ? selectedProviderOption
+        : (selectedProviderOption as StringOption | undefined)?.value) ?? '';
+    const selectedModel = getValues('model') ?? '';
+
+    if (storedSelection.provider !== selectedProvider) {
+      setValue('provider', createProviderOption(storedSelection.provider));
+    }
+    if (storedSelection.model !== selectedModel) {
+      setValue('model', storedSelection.model);
+    }
+  }, [
+    current_agent_id,
+    dirtyFields.model,
+    dirtyFields.provider,
+    endpointsConfig,
+    getValues,
+    models,
+    modelsQuery.isSuccess,
+    modelsReady,
+    providers,
+    setValue,
+  ]);
 
   /* Mutations */
   const update = useUpdateAgentMutation({
@@ -494,20 +564,7 @@ export default function AgentPanel() {
 
   const onSubmit = useCallback(
     async (data: AgentForm) => {
-      const tools = data.tools ?? [];
-
-      if (data.execute_code === true) {
-        tools.push(Tools.execute_code);
-      }
-      if (data.file_search === true) {
-        tools.push(Tools.file_search);
-      }
-      if (data.web_search === true) {
-        tools.push(Tools.web_search);
-      }
-      if (data.memory === true) {
-        tools.push(Tools.memory);
-      }
+      const tools = Array.from(new Set([...(data.tools ?? []), ...resolveCapabilityTools(data)]));
 
       const { payload: basePayload, provider, model } = composeAgentUpdatePayload(data, agent_id);
 
@@ -540,6 +597,18 @@ export default function AgentPanel() {
           status: 'error',
         });
       }
+      if (!modelsReady || modelsError) {
+        return showToast({
+          message: localize('com_error_models_not_loaded'),
+          status: 'error',
+        });
+      }
+      if (!(models[resolveModelCatalogKey(provider, models)] ?? []).includes(model)) {
+        return showToast({
+          message: localize('com_error_model_not_found'),
+          status: 'error',
+        });
+      }
       if (!data.name) {
         return showToast({
           message: localize('com_agents_missing_name'),
@@ -549,7 +618,18 @@ export default function AgentPanel() {
 
       create.mutate({ ...basePayload, model, tools, provider });
     },
-    [agent_id, create, dirtyFields, handleAvatarUpload, update, showToast, localize],
+    [
+      agent_id,
+      create,
+      dirtyFields,
+      handleAvatarUpload,
+      models,
+      modelsError,
+      modelsReady,
+      update,
+      showToast,
+      localize,
+    ],
   );
 
   const handleSelectAgent = useCallback(() => {
@@ -630,7 +710,13 @@ export default function AgentPanel() {
             </div>
           )}
           {canEditAgent && !agentQuery.isInitialLoading && activePanel === Panel.model && (
-            <ModelPanel models={models} providers={providers} setActivePanel={setActivePanel} />
+            <ModelPanel
+              models={models}
+              providers={providers}
+              modelsError={modelsError}
+              modelsReady={modelsReady}
+              setActivePanel={setActivePanel}
+            />
           )}
           {canEditAgent && !agentQuery.isInitialLoading && activePanel === Panel.builder && (
             <AgentConfig />

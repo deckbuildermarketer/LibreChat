@@ -16,9 +16,8 @@ import { createRun as createBaseRun } from './run';
 
 type CreateRunOptions = Parameters<typeof createBaseRun>[0];
 type CreateRunResult = Awaited<ReturnType<typeof createBaseRun>>;
-type ReachableAgent = CreateRunOptions['agents'][number] & {
+type DBMMemoryRunAgent = CreateRunOptions['agents'][number] & {
   additional_instructions?: string;
-  subagentAgentConfigs?: ReachableAgent[];
 };
 
 type ModelEndHandler = {
@@ -102,27 +101,9 @@ export function getDBMMemoryAssistantOutput(messages?: BaseMessage[]): string {
   return '';
 }
 
-function collectReachableAgents(agents: CreateRunOptions['agents']): ReachableAgent[] {
-  const result: ReachableAgent[] = [];
-  const visited = new Set<string>();
-  const pending = [...(agents as ReachableAgent[])];
-  for (let index = 0; index < pending.length; index++) {
-    const agent = pending[index];
-    if (!agent?.id || visited.has(agent.id)) {
-      continue;
-    }
-    visited.add(agent.id);
-    result.push(agent);
-    for (const child of agent.subagentAgentConfigs ?? []) {
-      pending.push(child);
-    }
-  }
-  return result;
-}
-
 /**
- * Selects aliases in reachable-agent order, not gateway-return order.
- * Kept as a pure helper for diagnostics/tests and bounded selections.
+ * Selects aliases in caller-provided agent order.
+ * Retained as a pure helper for diagnostics/tests and bounded selections.
  */
 export function selectDBMMemoryAliases(
   agents: Array<{ id?: string }>,
@@ -151,8 +132,8 @@ export function selectDBMMemoryAliases(
 
 /**
  * PRE-RUN recall must never fall through from an unregistered root to one of
- * its merely reachable children. A child receives memory only when it becomes
- * an actual run target through its own run lifecycle.
+ * its reachable children. A child receives memory only when it becomes an
+ * actual run target through its own run lifecycle.
  */
 export function selectRootDBMMemoryAlias(
   rootAgent: { id?: string } | undefined,
@@ -168,12 +149,12 @@ function buildMemoryContext(options: CreateRunOptions): DBMMemoryContext {
   return {
     userId: options.user?.id?.toString(),
     tenantId: options.tenantId ?? options.user?.tenantId?.toString(),
-    conversationId: options.requestBody?.conversationId,
+    conversationId: options.conversationId ?? options.requestBody?.conversationId,
     runId: options.runId,
   };
 }
 
-function appendMemoryInstruction(agent: ReachableAgent, memory: string): () => void {
+function appendMemoryInstruction(agent: DBMMemoryRunAgent, memory: string): () => void {
   const previous = agent.additional_instructions;
   agent.additional_instructions = [previous ?? '', memory].filter(Boolean).join('\n\n').trim();
   return () => {
@@ -182,26 +163,43 @@ function appendMemoryInstruction(agent: ReachableAgent, memory: string): () => v
 }
 
 function recordProducingAgent(activeAgentIds: Set<string>, args: unknown[]): void {
-  const metadata =
-    args[2] != null && typeof args[2] === 'object'
-      ? (args[2] as Record<string, unknown>)
-      : undefined;
-  const graph =
-    args[3] != null && typeof args[3] === 'object'
-      ? (args[3] as { getAgentContext?: (metadata?: unknown) => unknown })
-      : undefined;
-  try {
-    const context = graph?.getAgentContext?.(metadata) as { agentId?: unknown } | undefined;
-    if (typeof context?.agentId === 'string') {
-      activeAgentIds.add(context.agentId);
+  /**
+   * LibreChat/SDK callback metadata has evolved across releases. Prefer the
+   * graph-owned agent context when present, then accept explicit agentId fields
+   * from callback metadata. This keeps DBM extraction compatible with both
+   * top-level agents and the current eager/lazy/graph subagent runtime.
+   */
+  for (const candidate of args) {
+    if (candidate == null || typeof candidate !== 'object') {
+      continue;
+    }
+    const graph = candidate as { getAgentContext?: (metadata?: unknown) => unknown };
+    if (typeof graph.getAgentContext !== 'function') {
+      continue;
+    }
+    for (const metadata of args) {
+      try {
+        const context = graph.getAgentContext(metadata) as { agentId?: unknown } | undefined;
+        if (typeof context?.agentId === 'string') {
+          activeAgentIds.add(context.agentId);
+          return;
+        }
+      } catch {
+        // Telemetry must never affect a model run.
+      }
+    }
+  }
+
+  for (const candidate of args) {
+    if (candidate == null || typeof candidate !== 'object') {
+      continue;
+    }
+    const metadata = candidate as Record<string, unknown>;
+    const metadataAgentId = metadata.agentId ?? metadata.agent_id ?? metadata.executingAgentId;
+    if (typeof metadataAgentId === 'string') {
+      activeAgentIds.add(metadataAgentId);
       return;
     }
-  } catch {
-    // Fail open: telemetry must never affect a model run.
-  }
-  const metadataAgentId = metadata?.agentId ?? metadata?.agent_id;
-  if (typeof metadataAgentId === 'string') {
-    activeAgentIds.add(metadataAgentId);
   }
 }
 
@@ -245,17 +243,15 @@ async function prepareMemory(options: CreateRunOptions): Promise<{
     return { aliasesByAgentId, restore };
   }
 
-  const reachableAgents = collectReachableAgents(options.agents);
   const aliases = await getDBMMemoryAliases();
-  const aliasByAgentId = new Map(aliases.map((alias) => [alias.librechatAgentId, alias]));
-
-  // Build an in-memory lookup for POST-RUN extraction. This performs zero Mem0
-  // searches and lets extraction target only agents that actually ran.
-  for (const agent of reachableAgents) {
-    const alias = aliasByAgentId.get(agent.id);
-    if (alias) {
-      aliasesByAgentId.set(agent.id, alias);
-    }
+  /**
+   * Keep the complete alias lookup for POST-RUN extraction. Upstream now
+   * supports lazily resolved and saved-team subagents, so limiting this map to
+   * agents eagerly reachable before Run.create() would incorrectly drop agents
+   * that only materialize when delegation actually occurs.
+   */
+  for (const alias of aliases) {
+    aliasesByAgentId.set(alias.librechatAgentId, alias);
   }
 
   if (!isDBMMemoryRecallEnabled()) {
@@ -267,7 +263,7 @@ async function prepareMemory(options: CreateRunOptions): Promise<{
     return { aliasesByAgentId, restore };
   }
 
-  const rootAgent = options.agents[0] as ReachableAgent | undefined;
+  const rootAgent = options.agents[0] as DBMMemoryRunAgent | undefined;
   const rootAlias = selectRootDBMMemoryAlias(rootAgent, aliases);
   if (!rootAlias || !rootAgent) {
     return { aliasesByAgentId, restore };
@@ -347,8 +343,10 @@ function scheduleExtraction({
  *   not prefetched simply because they exist in the graph.
  * - Retrieved memory is appended only to request-scoped additional_instructions.
  * - Original agent objects are restored immediately after graph construction.
- * - Post-run extraction is fire-and-forget and only targets aliased agents that
+ * - Post-run extraction is fire-and-forget and targets only aliased agents that
  *   actually produced a model result during this run (root is a fallback).
+ * - Lazy and saved-team subagents introduced upstream are supported without
+ *   re-implementing LibreChat's native subagent loader.
  */
 export async function createRun(options: CreateRunOptions): Promise<CreateRunResult> {
   if (!isDBMMemoryEnabled()) {
