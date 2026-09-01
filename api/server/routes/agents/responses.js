@@ -25,6 +25,9 @@ const {
   getResponse,
   listModels,
 } = require('~/server/controllers/agents/responses');
+const {
+  createPreparedPreSalesWorkspace,
+} = require('~/server/controllers/agents/preSalesWorkspace');
 const { configMiddleware } = require('~/server/middleware');
 const {
   checkAgentPermission,
@@ -44,42 +47,6 @@ router.use(checkRemoteAgentsFeature);
  * @route POST /v1/responses
  * @desc Create a model response following Open Responses specification
  * @access Private (API key auth required)
- *
- * Request body:
- * {
- *   "model": "agent_id",                // Required: The agent ID to use
- *   "input": "..." | [...],             // Required: String or array of input items
- *   "stream": true,                     // Optional: Whether to stream (default: false)
- *   "previous_response_id": "...",      // Optional: Previous response for continuation
- *   "instructions": "...",              // Optional: Additional instructions
- *   "tools": [...],                     // Optional: Additional tools
- *   "tool_choice": "auto",              // Optional: Tool choice mode
- *   "max_output_tokens": 4096,          // Optional: Max tokens
- *   "temperature": 0.7                  // Optional: Temperature
- * }
- *
- * Response (streaming):
- * - SSE stream with semantic events:
- *   - response.in_progress
- *   - response.output_item.added
- *   - response.content_part.added
- *   - response.output_text.delta
- *   - response.output_text.done
- *   - response.function_call_arguments.delta
- *   - response.output_item.done
- *   - response.completed
- *   - [DONE]
- *
- * Response (non-streaming):
- * {
- *   "id": "resp_xxx",
- *   "object": "response",
- *   "created_at": 1234567890,
- *   "status": "completed",
- *   "model": "agent_id",
- *   "output": [...],                    // Array of output items
- *   "usage": { ... }
- * }
  */
 router.post('/', checkAgentPermission, createResponse);
 
@@ -87,38 +54,21 @@ router.post('/', checkAgentPermission, createResponse);
  * @route GET /v1/responses/models
  * @desc List available agents as models
  * @access Private (API key auth required)
- *
- * Response:
- * {
- *   "object": "list",
- *   "data": [
- *     {
- *       "id": "agent_id",
- *       "object": "model",
- *       "name": "Agent Name",
- *       "provider": "openai",
- *       ...
- *     }
- *   ]
- * }
  */
 router.get('/models', listModels);
+
+/**
+ * Internal DBM pre-sales handoff endpoint.
+ * Requires the normal Remote Agents API key plus X-Pre-Sales-Service-Key.
+ * It creates an idempotent, user-owned LibreChat conversation with the
+ * pre-call document mirrored into the conversation context.
+ */
+router.post('/pre-sales/conversations', createPreparedPreSalesWorkspace);
 
 /**
  * @route GET /v1/responses/:id
  * @desc Retrieve a stored response by ID
  * @access Private (API key auth required)
- *
- * Response:
- * {
- *   "id": "resp_xxx",
- *   "object": "response",
- *   "created_at": 1234567890,
- *   "status": "completed",
- *   "model": "agent_id",
- *   "output": [...],
- *   "usage": { ... }
- * }
  */
 router.get('/:id', getResponse);
 
