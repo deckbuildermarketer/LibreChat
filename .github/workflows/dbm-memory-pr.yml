@@ -2,7 +2,7 @@ name: DBM Fork Validation
 
 on:
   pull_request:
-    branches: [main, secondary]
+    branches: [main, secondary, sync/upstream-2026-09-06]
   workflow_dispatch:
 
 permissions:
