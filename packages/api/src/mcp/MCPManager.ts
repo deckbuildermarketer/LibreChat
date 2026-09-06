@@ -35,6 +35,7 @@ import { OAuthLifecycleRelay } from './oauth/pending';
 import { preProcessGraphTokens } from '~/utils/graph';
 import { isAbortError } from '~/utils/errors';
 import { formatToolContent } from './parsers';
+import { compactMCPResult } from './dbmResultCompaction';
 import { MCPConnection } from './connection';
 import { mcpConfig } from './mcpConfig';
 
@@ -1231,7 +1232,8 @@ Please follow these instructions when using tools from the respective MCP server
           await this.updateUserLastActivity(userId);
         }
         this.checkIdleConnections();
-        return formatToolContent(result as t.MCPToolCallResponse, provider);
+        const formatted = formatToolContent(result as t.MCPToolCallResponse, provider);
+        return compactMCPResult(formatted, { serverName, toolName });
       } catch (error) {
         if (error instanceof OAuthRecoveryTakeoverRequired) {
           recoveryTakeoverConsumed = true;
