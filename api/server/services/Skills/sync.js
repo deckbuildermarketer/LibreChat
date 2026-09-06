@@ -1,4 +1,4 @@
-const { FileContext } = require('librechat-data-provider');
+const { FileContext, skillSyncConfigSchema } = require('librechat-data-provider');
 const {
   getStorageMetadata,
   createGitHubSkillSyncRunner,
@@ -57,17 +57,51 @@ async function getSyntheticReq({ userId = SYSTEM_USER_ID, tenantId, loadAppConfi
   };
 }
 
+function parseSkillSync(value) {
+  if (value === undefined) {
+    return { state: 'missing' };
+  }
+  const parsed = skillSyncConfigSchema.safeParse(value);
+  return parsed.success ? { state: 'valid', data: parsed.data } : { state: 'invalid' };
+}
+
+/**
+ * Upstream v0.8.8 validates request-scoped skillSync independently from the
+ * base YAML config. A stale DB override from an older schema can therefore
+ * make /api/skills emit "Ignoring invalid skill sync config" even though the
+ * deployment's YAML is valid. Repair only invalid request copies with the
+ * already-validated base AppConfig while preserving valid tenant overrides.
+ */
 function withBaseSkillSyncConfig(req, baseConfig) {
-  if (!req?.config || req.config.config?.skillSync !== undefined) {
+  if (!req?.config) {
     return req;
   }
+
+  const baseSkillSync = baseConfig?.skillSync;
+  const effective = parseSkillSync(req.config.skillSync);
+  const nestedBase = parseSkillSync(req.config.config?.skillSync);
+  const effectiveInvalid = effective.state === 'invalid';
+  const nestedBaseInvalid = nestedBase.state === 'invalid';
+
+  if (effectiveInvalid || nestedBaseInvalid) {
+    logger.warn(
+      '[DBM][GitHubSkillSync] Repaired stale/invalid request-scoped skillSync config using validated base configuration',
+    );
+  }
+
+  if (!effectiveInvalid && nestedBase.state === 'valid') {
+    return req;
+  }
+
   return {
     ...req,
     config: {
       ...req.config,
+      ...(effectiveInvalid ? { skillSync: baseSkillSync } : {}),
       config: {
         ...(req.config.config ?? {}),
-        skillSync: baseConfig?.skillSync,
+        skillSync:
+          nestedBase.state === 'valid' ? nestedBase.data : baseSkillSync,
       },
     },
   };
