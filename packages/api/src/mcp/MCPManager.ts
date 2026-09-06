@@ -1233,7 +1233,7 @@ Please follow these instructions when using tools from the respective MCP server
         }
         this.checkIdleConnections();
         const formatted = formatToolContent(result as t.MCPToolCallResponse, provider);
-        return compactMCPResult(formatted, { serverName, toolName });
+        return compactMCPResult(formatted, { serverName, toolName, toolArguments });
       } catch (error) {
         if (error instanceof OAuthRecoveryTakeoverRequired) {
           recoveryTakeoverConsumed = true;
