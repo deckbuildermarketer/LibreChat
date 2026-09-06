@@ -1,4 +1,5 @@
-const { FileContext, skillSyncConfigSchema } = require('librechat-data-provider');
+const fs = require('node:fs/promises');
+const { FileContext, FileSources, skillSyncConfigSchema } = require('librechat-data-provider');
 const {
   getStorageMetadata,
   createGitHubSkillSyncRunner,
@@ -107,6 +108,40 @@ function withBaseSkillSyncConfig(req, baseConfig) {
   };
 }
 
+/**
+ * GitHub Skill Sync normally skips an unchanged file when the stored blob SHA
+ * matches GitHub. That is unsafe for local storage after an ephemeral-disk loss:
+ * MongoDB can still contain the metadata while the physical file is gone. For
+ * local/text storage, verify readability before allowing the runner to skip it.
+ * Returning null makes the normal sync path download and upsert the file again.
+ * Remote object stores are deliberately left unchanged here because existence
+ * checks are provider-specific and their metadata must not be invalidated by a
+ * local-filesystem probe.
+ */
+async function getHealthySkillFileByPath(skillId, relativePath) {
+  const file = await db.getSkillFileByPath(skillId, relativePath);
+  if (!file) {
+    return null;
+  }
+
+  if (file.source !== FileSources.local && file.source !== FileSources.text) {
+    return file;
+  }
+
+  try {
+    await fs.access(file.filepath);
+    return file;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      throw error;
+    }
+    logger.warn(
+      `[DBM][GitHubSkillSync] Missing local skill file; forcing rehydrate: ${file.filepath}`,
+    );
+    return null;
+  }
+}
+
 function createRunner({ getConfig, loadAppConfig, allowServerCredentials = true } = {}) {
   const resolveAppConfig = loadAppConfig ?? loadCurrentAppConfig;
   const resolveConfig = getConfig ?? (() => getSyncConfig(resolveAppConfig));
@@ -126,7 +161,7 @@ function createRunner({ getConfig, loadAppConfig, allowServerCredentials = true 
     findSkillBySourceIdentity: db.findSkillBySourceIdentity,
     listSkillsBySource: db.listSkillsBySource,
     listSkillFiles: db.listSkillFiles,
-    getSkillFileByPath: db.getSkillFileByPath,
+    getSkillFileByPath: getHealthySkillFileByPath,
     upsertSkillFile: db.upsertSkillFile,
     deleteSkillFile: db.deleteSkillFile,
     deleteSkill: db.deleteSkill,
