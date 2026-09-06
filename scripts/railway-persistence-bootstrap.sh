@@ -1,60 +1,52 @@
 #!/bin/sh
 set -eu
 
-PUBLIC_IMAGES="/app/client/public/images"
+# Railway currently mounts one persistent volume for DBM Chat at the public
+# images directory. Reuse a hidden subtree of that same volume for private
+# LibreChat uploads/skill reference files, then expose it only to the backend
+# through /app/uploads. This avoids a second Railway volume while keeping the
+# application-facing upload path stable across redeploys.
+PUBLIC_IMAGES="${RAILWAY_VOLUME_MOUNT_PATH:-/app/client/public/images}"
 UPLOADS="/app/uploads"
-PERSIST_ROOT="/app/persist"
-PERSIST_IMAGES_NAME=".dbm-persist-images"
 PERSIST_UPLOADS_NAME=".dbm-persist-uploads"
+PERSIST_UPLOADS="$PUBLIC_IMAGES/$PERSIST_UPLOADS_NAME"
 
 log() {
   printf '%s\n' "[dbm-persistence] $*"
 }
 
-# Final layout: Railway mounts the existing single persistent volume at
-# /app/persist, then these two application paths point at separate directories
-# on that private mount. This keeps private uploads outside the public images
-# tree while preserving the existing image URLs.
-if [ -d "$PERSIST_ROOT/$PERSIST_IMAGES_NAME" ] && [ -d "$PERSIST_ROOT/$PERSIST_UPLOADS_NAME" ]; then
-  log "persistent root detected at $PERSIST_ROOT"
-
-  rm -rf "$PUBLIC_IMAGES"
-  ln -s "$PERSIST_ROOT/$PERSIST_IMAGES_NAME" "$PUBLIC_IMAGES"
-
-  rm -rf "$UPLOADS"
-  ln -s "$PERSIST_ROOT/$PERSIST_UPLOADS_NAME" "$UPLOADS"
-
-  log "images -> $PERSIST_ROOT/$PERSIST_IMAGES_NAME"
-  log "uploads -> $PERSIST_ROOT/$PERSIST_UPLOADS_NAME"
+if [ ! -d "$PUBLIC_IMAGES" ]; then
+  log "persistent Railway volume not found at $PUBLIC_IMAGES; starting without upload persistence"
   exec npm run backend
 fi
 
-# Migration/staging mode. Before the Railway mount is moved, the same volume is
-# still mounted directly at /app/client/public/images. Create private subtrees
-# inside it and COPY existing user image directories there. Originals are left
-# untouched so this deployment is fully reversible.
-if [ -d "$PUBLIC_IMAGES" ]; then
-  STAGED_IMAGES="$PUBLIC_IMAGES/$PERSIST_IMAGES_NAME"
-  STAGED_UPLOADS="$PUBLIC_IMAGES/$PERSIST_UPLOADS_NAME"
+mkdir -p "$PERSIST_UPLOADS"
 
-  mkdir -p "$STAGED_IMAGES" "$STAGED_UPLOADS"
-
-  for entry in "$PUBLIC_IMAGES"/*; do
-    [ -e "$entry" ] || continue
-    name=$(basename "$entry")
-    case "$name" in
-      lost+found|uploads)
-        continue
-        ;;
-    esac
-
-    # Hidden staging directories are not matched by the shell glob above.
-    # Copy instead of move so current image URLs remain valid during staging.
-    cp -a "$entry" "$STAGED_IMAGES/"
-  done
-
-  log "migration staging prepared under current image volume"
-  log "next step: remount this same Railway volume at $PERSIST_ROOT"
+# Migrate any files that already exist in the image/container upload directory
+# before replacing it with the persistent symlink. Copy first, then switch.
+# Existing persistent files are preserved by cp -a unless the current runtime
+# carries a newer file with the same path, which is the correct recovery
+# behavior after an interrupted migration.
+if [ ! -L "$UPLOADS" ] && [ -d "$UPLOADS" ]; then
+  if [ -n "$(find "$UPLOADS" -mindepth 1 -print -quit 2>/dev/null || true)" ]; then
+    cp -a "$UPLOADS"/. "$PERSIST_UPLOADS"/
+    log "migrated existing runtime uploads into persistent storage"
+  fi
+  rm -rf "$UPLOADS"
 fi
+
+# Repair an old or incorrect symlink if one exists.
+if [ -L "$UPLOADS" ]; then
+  current_target="$(readlink "$UPLOADS" || true)"
+  if [ "$current_target" != "$PERSIST_UPLOADS" ]; then
+    rm -f "$UPLOADS"
+  fi
+fi
+
+if [ ! -e "$UPLOADS" ]; then
+  ln -s "$PERSIST_UPLOADS" "$UPLOADS"
+fi
+
+log "uploads -> persistent Railway volume: $PERSIST_UPLOADS"
 
 exec npm run backend
