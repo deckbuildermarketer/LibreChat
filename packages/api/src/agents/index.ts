@@ -25,6 +25,16 @@ export * from './harvest';
 export * from './backgroundCompletion';
 export * from './backgroundCompletionWakeup';
 export * from './initialize';
+/**
+ * DBM /v1 compatibility overrides. The implementations delegate to the latest
+ * upstream initializer/graph resolver and only add support for direct nested
+ * `subagents.agent_ids` on OpenAI-compatible endpoints.
+ */
+export {
+  initializeAgent,
+  resolveSubagentGraphs,
+  needsDBMV1DirectSubagentTrigger,
+} from './dbmV1Subagents';
 export * from './legacy';
 export * from './lazySubagents';
 export * from './lazyHistory';
@@ -57,6 +67,8 @@ export * from './skillConfigurable';
 export * from './skillFiles';
 export * from './codeFilesSession';
 export * from './run';
+/** DBM: explicit export intentionally overrides the star-exported createRun. */
+export { createRun } from './dbmMemoryRun';
 export * from './fading';
 export * from './publication';
 export * from './runtime';
