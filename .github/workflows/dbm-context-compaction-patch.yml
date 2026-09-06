@@ -1,0 +1,62 @@
+name: Patch DBM MCP context compaction
+
+on:
+  push:
+    branches: [secondary]
+    paths:
+      - '.github/dbm-context-compaction-trigger'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Wire compaction into MCP manager
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('packages/api/src/mcp/MCPManager.ts')
+          text = path.read_text(encoding='utf-8')
+
+          import_anchor = "import { formatToolContent } from './parsers';\n"
+          import_line = "import { compactMCPResult } from './dbmResultCompaction';\n"
+          if import_line not in text:
+              if import_anchor not in text:
+                  raise SystemExit('formatToolContent import anchor not found')
+              text = text.replace(import_anchor, import_anchor + import_line, 1)
+
+          old = "        return formatToolContent(result as t.MCPToolCallResponse, provider);\n"
+          new = (
+              "        const formatted = formatToolContent(result as t.MCPToolCallResponse, provider);\n"
+              "        return compactMCPResult(formatted, { serverName, toolName });\n"
+          )
+          if new not in text:
+              if old not in text:
+                  raise SystemExit('formatToolContent return anchor not found')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8')
+
+      - name: Validate patch
+        run: |
+          grep -q "compactMCPResult" packages/api/src/mcp/MCPManager.ts
+          grep -q "DBM_CONTEXT_COMPACTION" packages/api/src/mcp/dbmResultCompaction.ts
+
+      - name: Commit patch
+        run: |
+          if git diff --quiet; then
+            echo "Patch already applied"
+            exit 0
+          fi
+          git config user.name "dbm-automation"
+          git config user.email "automation@deckbuildermarketers.com"
+          git add packages/api/src/mcp/MCPManager.ts
+          git commit -m "Wire DBM MCP result compaction"
+          git push
