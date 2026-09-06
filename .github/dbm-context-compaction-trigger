@@ -1,1 +1,2 @@
 2026-09-06 enable MCP read-result compaction
+retry: preserve Google Docs indexes/links and allow explicit raw reads
