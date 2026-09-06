@@ -10,6 +10,7 @@ PUBLIC_IMAGES="${RAILWAY_VOLUME_MOUNT_PATH:-/app/client/public/images}"
 UPLOADS="/app/uploads"
 PERSIST_UPLOADS_NAME=".dbm-persist-uploads"
 PERSIST_UPLOADS="$PUBLIC_IMAGES/$PERSIST_UPLOADS_NAME"
+PERSISTENCE_MARKER="$PERSIST_UPLOADS/.dbm-persistence-marker"
 
 log() {
   printf '%s\n' "[dbm-persistence] $*"
@@ -45,6 +46,15 @@ fi
 
 if [ ! -e "$UPLOADS" ]; then
   ln -s "$PERSIST_UPLOADS" "$UPLOADS"
+fi
+
+# A non-secret sentinel gives production logs an explicit cross-deployment
+# persistence check without exposing or inspecting user/skill file contents.
+if [ -f "$PERSISTENCE_MARKER" ]; then
+  log "cross-deploy persistence marker verified"
+else
+  printf '%s\n' "initialized" > "$PERSISTENCE_MARKER"
+  log "cross-deploy persistence marker initialized"
 fi
 
 log "uploads -> persistent Railway volume: $PERSIST_UPLOADS"
