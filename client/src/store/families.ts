@@ -299,11 +299,6 @@ const showPromptsPopoverFamily = atomFamily<boolean, string | number | null>({
   default: false,
 });
 
-const showSkillsPopoverFamily = atomFamily<boolean, string | number | null>({
-  key: 'showSkillsPopoverByIndex',
-  default: false,
-});
-
 /**
  * Per-conversation queue of skill names the user invoked manually via the
  * `$` popover for the next submission. Structured channel that the submit
@@ -330,6 +325,25 @@ const pendingManualSkillsByConvoId = atomFamily<string[], string>({
 const pendingQuotesByConvoId = atomFamily<string[], string>({
   key: 'pendingQuotesByConvoId',
   default: [],
+});
+
+/**
+ * Text handed to a conversation's composer by a surface the user is leaving —
+ * today, a subagent thread continued into a chat of its own, where the panel
+ * and its composer unmount as the destination opens.
+ *
+ * Keyed by conversation rather than by composer index because the handoff
+ * outlives the navigation that carries it: a first visit resolves its record
+ * before the route moves, so the destination's composer mounts commits later.
+ * `useTextarea` drains it when that conversation's composer is on screen.
+ *
+ * Deliberately in memory rather than in the composer draft store: nothing the
+ * user has not sent should be written to storage they asked not to use, and
+ * draft restoration is itself gated on the Save Drafts preference.
+ */
+const pendingComposerTextByConvoId = atomFamily<string | undefined, string>({
+  key: 'pendingComposerTextByConvoId',
+  default: undefined,
 });
 
 /**
@@ -806,7 +820,7 @@ export default {
   activePromptByIndex,
   useClearSubmissionState,
   showPromptsPopoverFamily,
-  showSkillsPopoverFamily,
+  pendingComposerTextByConvoId,
   pendingManualSkillsByConvoId,
   pendingQuotesByConvoId,
   pendingSteersByConvoId,

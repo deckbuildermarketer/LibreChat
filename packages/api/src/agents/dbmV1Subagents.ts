@@ -9,18 +9,18 @@ import {
 } from 'librechat-data-provider';
 import type { Agent, AgentSubagentGraph } from 'librechat-data-provider';
 import type {
-  InitializedAgent,
-  InitializeAgentDbMethods,
-  InitializeAgentParams,
-} from './initialize';
-import type {
   DiscoverConnectedAgentsDeps,
   GraphSubagentHostConfig,
   ResolveSubagentGraphsParams,
 } from './discovery';
-import { initializeAgent as initializeBaseAgent } from './initialize';
+import type {
+  InitializedAgent,
+  InitializeAgentDbMethods,
+  InitializeAgentParams,
+} from './initialize';
 import { resolveSubagentGraphs as resolveBaseSubagentGraphs } from './discovery';
 import { validateAgentModel as validateBaseAgentModel } from './validation';
+import { initializeAgent as initializeBaseAgent } from './initialize';
 import { isFatalAgentInitializationError } from './errors';
 
 /**
@@ -40,7 +40,9 @@ type DBMSubagentHost = GraphSubagentHostConfig & {
   subagentAgentConfigs?: DBMSubagentHost[];
 };
 
-function directSubagentIds(config: { subagents?: { enabled?: boolean; agent_ids?: unknown[] } }): string[] {
+function directSubagentIds(config: {
+  subagents?: { enabled?: boolean; agent_ids?: unknown[] };
+}): string[] {
   if (config.subagents?.enabled !== true || !Array.isArray(config.subagents.agent_ids)) {
     return [];
   }
@@ -371,10 +373,7 @@ export async function resolveSubagentGraphs(
     }
     previousKnownCount = before.length;
 
-    const graphAuth = await resolveBaseSubagentGraphs(
-      { ...params, rootConfigs: before },
-      deps,
-    );
+    const graphAuth = await resolveBaseSubagentGraphs({ ...params, rootConfigs: before }, deps);
     authMap = graphAuth ? { ...authMap, ...graphAuth } : authMap;
 
     const afterGraphs = collectKnownConfigs(roots);

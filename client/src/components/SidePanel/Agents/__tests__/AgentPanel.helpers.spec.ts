@@ -1,7 +1,7 @@
 /**
  * @jest-environment jsdom
  */
-import { Constants, type Agent } from 'librechat-data-provider';
+import { Constants, EModelEndpoint, type Agent } from 'librechat-data-provider';
 import type { AgentModelParameters } from 'librechat-data-provider';
 import type { FieldNamesMarkedBoolean } from 'react-hook-form';
 import type { AgentForm } from '~/common';
@@ -158,6 +158,47 @@ describe('composeAgentUpdatePayload', () => {
     const { payload } = composeAgentUpdatePayload(form);
 
     expect(payload.code_environment_id).toBeUndefined();
+  });
+
+  it('persists standalone skill authoring separately from catalog access', () => {
+    const form = createForm();
+    form.skills = [];
+    form.skills_enabled = false;
+    form.skill_authoring_enabled = true;
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123');
+
+    expect(payload.skills_enabled).toBe(false);
+    expect(payload.skill_authoring_enabled).toBe(true);
+  });
+
+  it('prunes dropped model parameters during submission', () => {
+    const form = createForm();
+    form.provider = EModelEndpoint.openAI;
+    form.model_parameters.model = 'deployment-override';
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', {
+      endpointsConfig: {},
+      startupConfig: {
+        endpointsDropParamsMap: { [EModelEndpoint.openAI]: ['topP'] },
+      },
+    });
+
+    expect(payload.model_parameters?.temperature).toBe(1);
+    expect(payload.model_parameters?.top_p).toBeUndefined();
+    expect(payload.model_parameters?.model).toBe('deployment-override');
+  });
+
+  it('preserves model parameters during submission when the provider schema is unknown', () => {
+    const form = createForm();
+    form.provider = 'removed-provider';
+
+    const { payload } = composeAgentUpdatePayload(form, 'agent_123', {
+      endpointsConfig: {},
+      startupConfig: {},
+    });
+
+    expect(payload.model_parameters).toEqual(form.model_parameters);
   });
 });
 
