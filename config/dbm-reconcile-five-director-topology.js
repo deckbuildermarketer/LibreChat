@@ -42,18 +42,6 @@ Routing:
 - DBM internal platform/Scout/LibreChat/MCP/Railway work -> Business Intelligence.
 
 For WordPress work, do not route persistence to Delivery Operations. Website Production is the sole WordPress implementation owner.`,
-  master: `## DBM FIVE-DIRECTOR ROUTING OVERRIDE — ACTIVE
-
-This section supersedes any older four-Director or Delivery-owned WordPress routing language.
-
-Your direct Director children are exactly:
-- D: Marketing Growth Director
-- D: Content Studio Director
-- D: Website Production Director
-- D: Delivery Operations Director
-- D: Business Intelligence Director
-
-WordPress implementation belongs to Website Production. Content Studio owns substantive website copy/design. Delivery Operations owns supported non-WordPress persistence.`,
   content: `## WORDPRESS HANDOFF OVERRIDE — ACTIVE
 
 This section supersedes any older instruction that hands WordPress persistence to Delivery Operations.
@@ -144,9 +132,8 @@ async function main() {
 
   await connect();
 
-  const [scout, master, contentAgent, website, delivery] = await Promise.all([
+  const [scout, contentAgent, website, delivery] = await Promise.all([
     oneAgent({ id: IDS.scout }, 'Scout'),
-    oneAgent({ name: /DBM Master/i }, 'DBM Master agent'),
     oneAgent({ id: IDS.content }, 'Content Studio Director'),
     oneAgent({ id: IDS.website }, 'Website Production Director'),
     oneAgent({ id: IDS.delivery }, 'Delivery Operations Director'),
@@ -155,10 +142,6 @@ async function main() {
   await updateAgentExact(scout, {
     subagents: nextSubagents(scout.subagents),
     instructions: appendOverride(scout.instructions, OVERRIDES.scout),
-  });
-  await updateAgentExact(master, {
-    subagents: nextSubagents(master.subagents),
-    instructions: appendOverride(master.instructions, OVERRIDES.master),
   });
   await updateAgentExact(contentAgent, {
     instructions: appendOverride(contentAgent.instructions, OVERRIDES.content),
@@ -171,14 +154,13 @@ async function main() {
   });
 
   const verifyDocs = await Agent.find({
-    id: { $in: [IDS.scout, master.id, IDS.content, IDS.website, IDS.delivery] },
+    id: { $in: [IDS.scout, IDS.content, IDS.website, IDS.delivery] },
   })
     .select('id name subagents instructions updatedAt')
     .lean();
   const verify = new Map(verifyDocs.map((agent) => [agent.id, agent]));
 
   const vScout = verify.get(IDS.scout);
-  const vMaster = verify.get(master.id);
   const vContent = verify.get(IDS.content);
   const vWebsite = verify.get(IDS.website);
   const vDelivery = verify.get(IDS.delivery);
@@ -187,13 +169,8 @@ async function main() {
     scout_subagents_enabled: vScout?.subagents?.enabled === true,
     scout_self_spawn_disabled: vScout?.subagents?.allowSelf === false,
     scout_has_exact_five_directors: sameIds(vScout?.subagents?.agent_ids, DIRECTOR_IDS),
-    master_subagents_enabled: vMaster?.subagents?.enabled === true,
-    master_self_spawn_disabled: vMaster?.subagents?.allowSelf === false,
-    master_has_exact_five_directors: sameIds(vMaster?.subagents?.agent_ids, DIRECTOR_IDS),
     scout_instruction_override:
       String(vScout?.instructions || '').includes('DBM FIVE-DIRECTOR ROUTING OVERRIDE — ACTIVE'),
-    master_instruction_override:
-      String(vMaster?.instructions || '').includes('DBM FIVE-DIRECTOR ROUTING OVERRIDE — ACTIVE'),
     content_wordpress_handoff_override:
       String(vContent?.instructions || '').includes('WORDPRESS HANDOFF OVERRIDE — ACTIVE'),
     website_elementor_full_width_override:
@@ -221,11 +198,6 @@ async function main() {
           id: vScout.id,
           name: vScout.name,
           subagents: vScout.subagents,
-        },
-        master: {
-          id: vMaster.id,
-          name: vMaster.name,
-          subagents: vMaster.subagents,
         },
         website: {
           id: vWebsite.id,
