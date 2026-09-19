@@ -75,7 +75,9 @@ function requestsRawResult(toolArguments: ToolArguments): boolean {
       const normalized = normalizeKey(key);
       if (RAW_MODE_KEYS.has(key.toLowerCase()) || RAW_MODE_KEYS.has(normalized)) {
         if (child === true) return true;
-        if (typeof child === 'string' && RAW_MODE_VALUES.has(child.trim().toLowerCase())) return true;
+        if (typeof child === 'string' && RAW_MODE_VALUES.has(child.trim().toLowerCase())) {
+          return true;
+        }
       }
       if (inspect(child, depth + 1)) return true;
     }
@@ -203,7 +205,10 @@ function flattenGoogleDoc(node: unknown): CompactGoogleDoc | null {
   };
 
   walk(root);
-  const text = textParts.join('').replace(/\n{3,}/g, '\n\n').trim();
+  const text = textParts
+    .join('')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
   if (!text || textParts.length < 2) return null;
 
   const dedupedLinks = links.filter(
