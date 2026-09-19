@@ -994,7 +994,10 @@ export default function mongoMeili(schema: Schema, options: MongoMeiliOptions): 
         partialFilterExpression: {
           [options.excludeFromIndexPath]: { $exists: true },
           _meiliIndex: { $eq: false },
-          _meiliCleanupVersion: { $exists: false },
+          // Equality is supported in partialFilterExpression. Matching null
+          // also covers legacy documents where this field is absent, whereas
+          // $exists:false is rejected by MongoDB partial indexes.
+          _meiliCleanupVersion: { $eq: null },
         },
       },
     );

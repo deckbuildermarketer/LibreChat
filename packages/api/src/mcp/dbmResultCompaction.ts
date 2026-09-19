@@ -75,7 +75,9 @@ function requestsRawResult(toolArguments: ToolArguments): boolean {
       const normalized = normalizeKey(key);
       if (RAW_MODE_KEYS.has(key.toLowerCase()) || RAW_MODE_KEYS.has(normalized)) {
         if (child === true) return true;
-        if (typeof child === 'string' && RAW_MODE_VALUES.has(child.trim().toLowerCase())) return true;
+        if (typeof child === 'string' && RAW_MODE_VALUES.has(child.trim().toLowerCase())) {
+          return true;
+        }
       }
       if (inspect(child, depth + 1)) return true;
     }
@@ -203,7 +205,10 @@ function flattenGoogleDoc(node: unknown): CompactGoogleDoc | null {
   };
 
   walk(root);
-  const text = textParts.join('').replace(/\n{3,}/g, '\n\n').trim();
+  const text = textParts
+    .join('')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
   if (!text || textParts.length < 2) return null;
 
   const dedupedLinks = links.filter(
@@ -259,42 +264,115 @@ function pruneJson(value: unknown, maxItems: number, depth = 0): unknown {
   return output;
 }
 
-function renderGoogleDoc(doc: CompactGoogleDoc): string {
+function clipInline(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  if (maxChars <= 1) return value.slice(0, Math.max(0, maxChars));
+  return `${value.slice(0, Math.max(1, maxChars - 1))}…`;
+}
+
+function clipHeadTail(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  if (maxChars < 48) return clipInline(value, maxChars);
+  const marker = ' … ';
+  const head = Math.ceil((maxChars - marker.length) * 0.72);
+  const tail = Math.max(1, maxChars - marker.length - head);
+  return `${value.slice(0, head)}${marker}${value.slice(-tail)}`;
+}
+
+function renderGoogleDoc(doc: CompactGoogleDoc, maxChars: number): string {
   const maxParagraphs = positiveInt('DBM_MCP_DOC_MAX_PARAGRAPHS', DEFAULT_MAX_DOC_PARAGRAPHS);
   const maxLinks = positiveInt('DBM_MCP_DOC_MAX_LINKS', DEFAULT_MAX_DOC_LINKS);
+  const blocks: string[] = [];
+
+  const currentLength = (): number => blocks.join('\n\n').length;
+  const remaining = (): number => Math.max(0, maxChars - currentLength());
+
+  const appendSingle = (value: string): boolean => {
+    if (!value) return true;
+    const separatorCost = blocks.length ? 2 : 0;
+    const available = remaining() - separatorCost;
+    if (available <= 0) return false;
+    blocks.push(clipInline(value, available));
+    return value.length <= available;
+  };
+
+  const appendLines = (label: string, lines: string[], omittedLabel: string): void => {
+    if (!lines.length || remaining() <= label.length + 6) return;
+    const separatorCost = blocks.length ? 2 : 0;
+    const available = remaining() - separatorCost;
+    const prefix = `${label}:\n`;
+    if (available <= prefix.length + 8) return;
+
+    const selected: string[] = [];
+    let used = prefix.length;
+    for (const line of lines) {
+      const separator = selected.length ? 1 : 0;
+      if (used + separator + line.length > available) break;
+      selected.push(line);
+      used += separator + line.length;
+    }
+
+    if (selected.length < lines.length) {
+      const marker = `[${lines.length - selected.length} additional ${omittedLabel} omitted]`;
+      const separator = selected.length ? 1 : 0;
+      if (used + separator + marker.length <= available) {
+        selected.push(marker);
+      }
+    }
+
+    if (selected.length) {
+      blocks.push(prefix + selected.join('\n'));
+    }
+  };
+
+  if (doc.title) appendSingle(`Title: ${doc.title}`);
+
+  appendLines(
+    'Headings',
+    doc.headings.map((heading) => clipInline(heading, 240)),
+    'headings',
+  );
+
+  // Hyperlinks are intentionally rendered before verbose paragraph/plain-text
+  // content. They frequently carry Preview/Edit/source URLs that downstream
+  // agents must not lose merely because the document body is long.
+  const linkLines = doc.links.slice(0, maxLinks).map((link) => {
+    const range =
+      link.startIndex != null || link.endIndex != null
+        ? `[${link.startIndex ?? '?'}:${link.endIndex ?? '?'}]`
+        : '[?:?]';
+    return `${range} ${clipInline(link.text || '(linked text)', 120)} -> ${link.url}`;
+  });
+  if (doc.links.length > maxLinks) {
+    linkLines.push(`[${doc.links.length - maxLinks} additional links omitted]`);
+  }
+  appendLines('Hyperlinks', linkLines, 'links');
+
   const paragraphLines = doc.paragraphs.slice(0, maxParagraphs).map((paragraph) => {
     const range =
       paragraph.startIndex != null || paragraph.endIndex != null
         ? `[${paragraph.startIndex ?? '?'}:${paragraph.endIndex ?? '?'}]`
         : '[?:?]';
-    return `${range} ${paragraph.style ?? 'NORMAL_TEXT'} | ${paragraph.text}`;
+    return `${range} ${paragraph.style ?? 'NORMAL_TEXT'} | ${clipInline(paragraph.text, 220)}`;
   });
   if (doc.paragraphs.length > maxParagraphs) {
     paragraphLines.push(
       `[${doc.paragraphs.length - maxParagraphs} additional paragraph index entries omitted]`,
     );
   }
+  appendLines('Paragraph index map', paragraphLines, 'paragraph entries');
 
-  const linkLines = doc.links.slice(0, maxLinks).map((link) => {
-    const range =
-      link.startIndex != null || link.endIndex != null
-        ? `[${link.startIndex ?? '?'}:${link.endIndex ?? '?'}]`
-        : '[?:?]';
-    return `${range} ${link.text || '(linked text)'} -> ${link.url}`;
-  });
-  if (doc.links.length > maxLinks) {
-    linkLines.push(`[${doc.links.length - maxLinks} additional links omitted]`);
+  if (doc.text && remaining() > 32) {
+    const separatorCost = blocks.length ? 2 : 0;
+    const prefix = 'Plain text:\n';
+    const available = remaining() - separatorCost - prefix.length;
+    if (available > 16) {
+      blocks.push(prefix + clipHeadTail(doc.text, available));
+    }
   }
 
-  return [
-    doc.title ? `Title: ${doc.title}` : '',
-    doc.headings.length ? `Headings:\n${doc.headings.join('\n')}` : '',
-    paragraphLines.length ? `Paragraph index map:\n${paragraphLines.join('\n')}` : '',
-    linkLines.length ? `Hyperlinks:\n${linkLines.join('\n')}` : '',
-    `Plain text:\n${doc.text}`,
-  ]
-    .filter(Boolean)
-    .join('\n\n');
+  const rendered = blocks.join('\n\n');
+  return rendered.length <= maxChars ? rendered : rendered.slice(0, maxChars);
 }
 
 function compactText(content: string, serverName: string, toolName: string): string {
@@ -307,7 +385,7 @@ function compactText(content: string, serverName: string, toolName: string): str
     if (/read[_-]?doc/i.test(toolName) || /google[-_ ]?docs?/i.test(serverName)) {
       const doc = flattenGoogleDoc(parsed);
       compacted = doc
-        ? renderGoogleDoc(doc)
+        ? renderGoogleDoc(doc, maxChars)
         : JSON.stringify(
             pruneJson(parsed, positiveInt('DBM_MCP_RESULT_MAX_ITEMS', DEFAULT_MAX_ARRAY_ITEMS)),
           );
