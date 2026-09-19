@@ -108,6 +108,18 @@ async function oneAgent(query, label) {
   return matches[0];
 }
 
+async function optionalSingleAgent(query, label) {
+  const matches = await Agent.find(query).lean();
+  if (matches.length > 1) {
+    throw new Error(
+      `Expected at most one ${label}; found ${matches.length}: ${JSON.stringify(
+        matches.map((agent) => ({ id: agent.id, name: agent.name, updatedAt: agent.updatedAt })),
+      )}`,
+    );
+  }
+  return matches[0] || null;
+}
+
 async function updateAgentExact(agent, changes) {
   const updated = await db.updateAgent(
     { id: agent.id, _id: agent._id, updatedAt: agent.updatedAt },
@@ -146,7 +158,7 @@ async function main() {
 
   const [scout, master, contentAgent, website, delivery] = await Promise.all([
     oneAgent({ id: IDS.scout }, 'Scout'),
-    oneAgent({ name: /DBM Master/i }, 'DBM Master agent'),
+    optionalSingleAgent({ name: /DBM Master/i }, 'DBM Master agent'),
     oneAgent({ id: IDS.content }, 'Content Studio Director'),
     oneAgent({ id: IDS.website }, 'Website Production Director'),
     oneAgent({ id: IDS.delivery }, 'Delivery Operations Director'),
@@ -156,10 +168,12 @@ async function main() {
     subagents: nextSubagents(scout.subagents),
     instructions: appendOverride(scout.instructions, OVERRIDES.scout),
   });
-  await updateAgentExact(master, {
-    subagents: nextSubagents(master.subagents),
-    instructions: appendOverride(master.instructions, OVERRIDES.master),
-  });
+  if (master) {
+    await updateAgentExact(master, {
+      subagents: nextSubagents(master.subagents),
+      instructions: appendOverride(master.instructions, OVERRIDES.master),
+    });
+  }
   await updateAgentExact(contentAgent, {
     instructions: appendOverride(contentAgent.instructions, OVERRIDES.content),
   });
@@ -170,15 +184,18 @@ async function main() {
     instructions: appendOverride(delivery.instructions, OVERRIDES.delivery),
   });
 
+  const verifyIds = [IDS.scout, IDS.content, IDS.website, IDS.delivery];
+  if (master) verifyIds.push(master.id);
+
   const verifyDocs = await Agent.find({
-    id: { $in: [IDS.scout, master.id, IDS.content, IDS.website, IDS.delivery] },
+    id: { $in: verifyIds },
   })
     .select('id name subagents instructions updatedAt')
     .lean();
   const verify = new Map(verifyDocs.map((agent) => [agent.id, agent]));
 
   const vScout = verify.get(IDS.scout);
-  const vMaster = verify.get(master.id);
+  const vMaster = master ? verify.get(master.id) : null;
   const vContent = verify.get(IDS.content);
   const vWebsite = verify.get(IDS.website);
   const vDelivery = verify.get(IDS.delivery);
@@ -187,12 +204,14 @@ async function main() {
     scout_subagents_enabled: vScout?.subagents?.enabled === true,
     scout_self_spawn_disabled: vScout?.subagents?.allowSelf === false,
     scout_has_exact_five_directors: sameIds(vScout?.subagents?.agent_ids, DIRECTOR_IDS),
-    master_subagents_enabled: vMaster?.subagents?.enabled === true,
-    master_self_spawn_disabled: vMaster?.subagents?.allowSelf === false,
-    master_has_exact_five_directors: sameIds(vMaster?.subagents?.agent_ids, DIRECTOR_IDS),
+    master_optional_or_subagents_enabled: !vMaster || vMaster?.subagents?.enabled === true,
+    master_optional_or_self_spawn_disabled: !vMaster || vMaster?.subagents?.allowSelf === false,
+    master_optional_or_has_exact_five_directors:
+      !vMaster || sameIds(vMaster?.subagents?.agent_ids, DIRECTOR_IDS),
     scout_instruction_override:
       String(vScout?.instructions || '').includes('DBM FIVE-DIRECTOR ROUTING OVERRIDE — ACTIVE'),
-    master_instruction_override:
+    master_optional_or_instruction_override:
+      !vMaster ||
       String(vMaster?.instructions || '').includes('DBM FIVE-DIRECTOR ROUTING OVERRIDE — ACTIVE'),
     content_wordpress_handoff_override:
       String(vContent?.instructions || '').includes('WORDPRESS HANDOFF OVERRIDE — ACTIVE'),
@@ -222,11 +241,13 @@ async function main() {
           name: vScout.name,
           subagents: vScout.subagents,
         },
-        master: {
-          id: vMaster.id,
-          name: vMaster.name,
-          subagents: vMaster.subagents,
-        },
+        master: vMaster
+          ? {
+              id: vMaster.id,
+              name: vMaster.name,
+              subagents: vMaster.subagents,
+            }
+          : null,
         website: {
           id: vWebsite.id,
           name: vWebsite.name,
