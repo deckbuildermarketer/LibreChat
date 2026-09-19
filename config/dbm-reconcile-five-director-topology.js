@@ -125,9 +125,10 @@ function sameIds(actual, expected) {
 
 async function main() {
   if (process.env.DBM_TOPOLOGY_RECONCILE_APPLY !== 'true') {
-    throw new Error(
-      'DBM_TOPOLOGY_RECONCILE_APPLY must equal true for this one-time reconciliation.',
+    console.log(
+      '[DBM_FIVE_DIRECTOR_TOPOLOGY_RECONCILE_SKIPPED] DBM_TOPOLOGY_RECONCILE_APPLY is not true; no changes applied.',
     );
+    return;
   }
 
   await connect();
