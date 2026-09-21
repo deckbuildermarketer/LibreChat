@@ -189,7 +189,7 @@ const buildIndexableQuery = (
 /**
  * Excluded documents that may still hold a Meili entry. The legacy branch matches a
  * `_meiliCleanupVersion` that is absent or null, written as a null equality rather than
- * `$exists: false` so `meili_excluded_legacy_cleanup_v4` can serve it: a partial index
+ * `$exists: false` so `meili_excluded_legacy_cleanup_v3` can serve it: a partial index
  * accepts null equality and rejects `$exists: false`, and the planner only reaches a
  * partial index through a predicate that implies its filter.
  */
@@ -997,7 +997,7 @@ export default function mongoMeili(schema: Schema, options: MongoMeiliOptions): 
         },
       },
     );
-    /* Serves the legacy branch of `buildExcludedIndexedQuery`. MongoDB rewrites
+    /* DBM compatibility: keep the legacy cleanup index name at v3 because production\n     * already has this exact key/filter definition under that name. Renaming only the\n     * index to upstream's v4 would make Mongoose attempt to create a duplicate index\n     * and log startup errors. The semantics remain identical to upstream.\n     * Serves the legacy branch of `buildExcludedIndexedQuery`. MongoDB rewrites
      * `$exists: false` into `$not`, which no `partialFilterExpression` accepts, so the
      * unstamped state is expressed as a null equality: it admits an absent or null
      * `_meiliCleanupVersion` and keeps every already-stamped document out, which is what
@@ -1007,7 +1007,7 @@ export default function mongoMeili(schema: Schema, options: MongoMeiliOptions): 
     schema.index(
       { _meiliIndex: 1, _meiliCleanupVersion: 1, [options.primaryKey]: 1 },
       {
-        name: 'meili_excluded_legacy_cleanup_v4',
+        name: 'meili_excluded_legacy_cleanup_v3',
         partialFilterExpression: {
           [options.excludeFromIndexPath]: { $exists: true },
           _meiliIndex: { $eq: false },
