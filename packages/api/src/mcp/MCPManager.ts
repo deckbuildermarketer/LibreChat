@@ -41,11 +41,11 @@ import { UserConnectionManager } from './UserConnectionManager';
 import { ConnectionsRepository } from './ConnectionsRepository';
 import { MCPConnectionFactory } from './MCPConnectionFactory';
 import { processMCPEnv, isPluginSourced } from '~/utils/env';
+import { compactMCPResult } from './dbmResultCompaction';
 import { OAuthLifecycleRelay } from './oauth/pending';
 import { preProcessGraphTokens } from '~/utils/graph';
 import { isOwnedAbortError } from '~/utils/errors';
 import { formatToolContent } from './parsers';
-import { compactMCPResult } from './dbmResultCompaction';
 import { MCPConnection } from './connection';
 import { mcpConfig } from './mcpConfig';
 
