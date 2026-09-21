@@ -72,8 +72,6 @@ export * from './skillConfigurable';
 export * from './skillFiles';
 export * from './codeFilesSession';
 export * from './run';
-/** DBM: explicit export intentionally overrides the star-exported createRun. */
-export { createRun } from './dbmMemoryRun';
 export * from './fading';
 export * from './publication';
 export * from './runtime';
