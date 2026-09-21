@@ -4,6 +4,7 @@ export {
   type CreateGenerationJobOptions,
   type GenerationJobManagerOptions,
   type TerminalJobClaim,
+  GENERATION_RECOVERY_FAILED_ERROR,
   TERMINAL_PUBLICATION_RECONNECT_ERROR,
 } from './GenerationJobManager';
 
@@ -63,9 +64,22 @@ export { createStreamServices } from './createStreamServices';
 export type { StreamServicesConfig, StreamServices } from './createStreamServices';
 export { filterPersistableAbortContent, hasPersistableAbortContent } from './abortContent';
 export { getGenerationElapsedMs } from './elapsed';
+export {
+  projectTerminalEvent,
+  TRANSIENT_MESSAGE_FIELDS,
+  TRANSIENT_FILE_FIELDS,
+  TRANSIENT_ATTACHMENT_FIELDS,
+} from './terminalProjection';
+export type {
+  ProjectedFinalEvent,
+  ProjectedMessageFields,
+  TransientMessageField,
+} from './terminalProjection';
 
 // Implementations (for advanced use cases)
 export { InMemoryJobStore } from './implementations/InMemoryJobStore';
 export { InMemoryEventTransport } from './implementations/InMemoryEventTransport';
 export { RedisJobStore } from './implementations/RedisJobStore';
 export { RedisEventTransport } from './implementations/RedisEventTransport';
+
+export { waitForGenerationPersistence } from './persistence';

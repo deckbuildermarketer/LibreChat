@@ -186,7 +186,16 @@ const buildIndexableQuery = (
   };
 };
 
-const buildExcludedIndexedQuery = (excludeFromIndexPath?: string): FilterQuery<unknown> | null => {
+/**
+ * Excluded documents that may still hold a Meili entry. The legacy branch matches a
+ * `_meiliCleanupVersion` that is absent or null, written as a null equality rather than
+ * `$exists: false` so `meili_excluded_legacy_cleanup_v4` can serve it: a partial index
+ * accepts null equality and rejects `$exists: false`, and the planner only reaches a
+ * partial index through a predicate that implies its filter.
+ */
+export const buildExcludedIndexedQuery = (
+  excludeFromIndexPath?: string,
+): FilterQuery<unknown> | null => {
   if (excludeFromIndexPath == null) {
     return null;
   }
@@ -196,7 +205,7 @@ const buildExcludedIndexedQuery = (excludeFromIndexPath?: string): FilterQuery<u
     $or: [
       { _meiliIndex: true },
       { _meiliIndexAttempted: true },
-      { _meiliIndex: false, _meiliCleanupVersion: { $exists: false } },
+      { _meiliIndex: false, _meiliCleanupVersion: null },
     ],
   };
 };
@@ -478,6 +487,7 @@ const createMeiliMongooseModel = ({
       );
 
       // Get approximate total count for raw estimation, the sync should not overcome this number
+      // eslint-disable-next-line no-restricted-syntax -- a collection-wide estimate is the quantity wanted here: it bounds a full-index sync and only feeds a progress log, so a tenant-scoped count would be wrong, not just unnecessary.
       const approxTotalCount = await this.estimatedDocumentCount();
       logger.info(
         `[syncWithMeili] Approximate total number of all ${collectionName}: ${approxTotalCount}`,
@@ -987,16 +997,20 @@ export default function mongoMeili(schema: Schema, options: MongoMeiliOptions): 
         },
       },
     );
+    /* Serves the legacy branch of `buildExcludedIndexedQuery`. MongoDB rewrites
+     * `$exists: false` into `$not`, which no `partialFilterExpression` accepts, so the
+     * unstamped state is expressed as a null equality: it admits an absent or null
+     * `_meiliCleanupVersion` and keeps every already-stamped document out, which is what
+     * bounds this index to the shrinking legacy population rather than to every
+     * excluded document ever written. Cleanup stamps the version, and the document
+     * leaves the index. */
     schema.index(
       { _meiliIndex: 1, _meiliCleanupVersion: 1, [options.primaryKey]: 1 },
       {
-        name: 'meili_excluded_legacy_cleanup_v3',
+        name: 'meili_excluded_legacy_cleanup_v4',
         partialFilterExpression: {
           [options.excludeFromIndexPath]: { $exists: true },
           _meiliIndex: { $eq: false },
-          // Equality is supported in partialFilterExpression. Matching null
-          // also covers legacy documents where this field is absent, whereas
-          // $exists:false is rejected by MongoDB partial indexes.
           _meiliCleanupVersion: { $eq: null },
         },
       },

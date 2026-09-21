@@ -1,4 +1,5 @@
 import {
+  AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
   AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
@@ -39,6 +40,7 @@ const DEFAULT_PURGE_RECOVERY_INTERVAL_MS = 30_000;
 const DEFAULT_PURGE_RECOVERY_LIMIT = 25;
 
 export interface AgentTriggerServiceOptions {
+  completionResultBatchSize?: number;
   address?: BoundAddress | string | null;
 }
 
@@ -55,6 +57,7 @@ export interface AgentTriggerServiceDeps {
   userDrainPollMs?: number;
   purgeRecoveryIntervalMs?: number;
   purgeRecoveryLimit?: number;
+  reclaimCheckpointDeletions?: (limit: number) => Promise<number>;
   supportsDetachedActionCompletion?: () => boolean;
   settleSourceBeforeDeadLetter?: AgentTriggerDeliveryEngineDeps['settleSourceBeforeDeadLetter'];
 }
@@ -111,6 +114,9 @@ export interface AgentTriggerDeliveryPersistence {
   completeAgentTriggerDelivery: AgentTriggerDeliveryStore['complete'];
   retireAgentTriggerDelivery: AgentTriggerDeliveryMethods['retireAgentTriggerDelivery'];
   renewAgentTriggerDeliveryProducerLease: AgentTriggerDeliveryMethods['renewAgentTriggerDeliveryProducerLease'];
+  persistAgentBackgroundToolResult?: AgentTriggerDeliveryMethods['persistAgentBackgroundToolResult'];
+  getAgentBackgroundToolResultClaim?: AgentTriggerDeliveryMethods['getAgentBackgroundToolResultClaim'];
+  releaseAgentBackgroundToolResultClaims?: AgentTriggerDeliveryMethods['releaseAgentBackgroundToolResultClaims'];
   retryAgentTriggerDelivery: AgentTriggerDeliveryStore['retry'];
   deadLetterAgentTriggerDelivery: AgentTriggerDeliveryStore['dead'];
   getAgentTriggerDelivery: (deliveryKey: string) => Promise<AgentTriggerStoredRecord | null>;
@@ -167,6 +173,20 @@ export interface AgentTriggerService {
     options?: { onlyIfUnclaimed?: boolean; onlyIfDead?: boolean },
   ) => Promise<boolean>;
   renewProducerLease: (deliveryKey: string, sourceId: string, leaseUntil: Date) => Promise<boolean>;
+  persistBackgroundToolResult: (input: {
+    deliveryKey: string;
+    sourceId: string;
+    result: {
+      status: 'completed' | 'error' | 'cancelled';
+      output: string;
+      settledAt: Date;
+    };
+  }) => Promise<boolean>;
+  getBackgroundToolResultClaim: (
+    input: Parameters<AgentTriggerDeliveryMethods['getAgentBackgroundToolResultClaim']>[0],
+  ) => ReturnType<AgentTriggerDeliveryMethods['getAgentBackgroundToolResultClaim']>;
+  getBackgroundCompletionResultBatchSize: () => number;
+  releaseBackgroundToolResultClaims: AgentTriggerDeliveryMethods['releaseAgentBackgroundToolResultClaims'];
   drainUser: (userId: string) => Promise<void>;
   prepareUserPurge: (userId: string, fenceStartedAt: Date, tenantId?: string) => Promise<void>;
   cancelUserPurge: (userId: string, fenceStartedAt: Date) => Promise<boolean>;
@@ -182,6 +202,7 @@ function createDeliveryStore(
       methods.claimNextAgentTriggerDelivery({
         ...input,
         workerCapabilities: [
+          AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
           AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1,
           AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
           ...(supportsDetachedActionCompletion()
@@ -253,6 +274,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
     throw new TypeError('purgeRecoveryLimit must be a positive integer');
   }
   let boundOrigin: string | undefined;
+  let backgroundCompletionResultBatchSize = 8;
   let deliveryEngine: AgentTriggerDeliveryEngine | undefined;
   let initializePromise: Promise<void> | undefined;
   let purgeRecoveryPromise: Promise<void> | undefined;
@@ -365,29 +387,38 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
         return 0;
       });
     const current = runAsSystem(async () => {
-      const [purgedUsers, publishedLanes, batchRecovery, expiredLegacyActorReceipts] =
-        await Promise.all([
-          isolated('user purges', () => methods.recoverAgentTriggerUserPurges(purgeRecoveryLimit)),
-          isolated('lane publications', () =>
-            methods.recoverAgentTriggerLanePublications(purgeRecoveryLimit),
-          ),
-          methods.recoverAgentTriggerBatchReceipts(purgeRecoveryLimit).then(
-            (count) => ({ succeeded: true as const, count }),
-            (error) => {
-              logger.error(
-                '[agent-triggers] durable delivery maintenance step failed (batch receipts):',
-                error,
-              );
-              return { succeeded: false as const, count: 0 };
-            },
-          ),
-          isolated(
-            'legacy actor receipts',
-            () =>
-              methods.expireLegacyAgentEventActorReceipts?.(new Date(), purgeRecoveryLimit) ??
-              Promise.resolve(0),
-          ),
-        ]);
+      const [
+        purgedUsers,
+        publishedLanes,
+        batchRecovery,
+        expiredLegacyActorReceipts,
+        retiredCheckpointDeletions,
+      ] = await Promise.all([
+        isolated('user purges', () => methods.recoverAgentTriggerUserPurges(purgeRecoveryLimit)),
+        isolated('lane publications', () =>
+          methods.recoverAgentTriggerLanePublications(purgeRecoveryLimit),
+        ),
+        methods.recoverAgentTriggerBatchReceipts(purgeRecoveryLimit).then(
+          (count) => ({ succeeded: true as const, count }),
+          (error) => {
+            logger.error(
+              '[agent-triggers] durable delivery maintenance step failed (batch receipts):',
+              error,
+            );
+            return { succeeded: false as const, count: 0 };
+          },
+        ),
+        isolated(
+          'legacy actor receipts',
+          () =>
+            methods.expireLegacyAgentEventActorReceipts?.(new Date(), purgeRecoveryLimit) ??
+            Promise.resolve(0),
+        ),
+        isolated(
+          'checkpoint deletion evidence',
+          () => deps.reclaimCheckpointDeletions?.(purgeRecoveryLimit) ?? Promise.resolve(0),
+        ),
+      ]);
       const recoveredBatches = batchRecovery.count;
       const reclaimedLanes = batchRecovery.succeeded
         ? await isolated('lane reclamation', () =>
@@ -402,7 +433,8 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
         publishedLanes > 0 ||
         recoveredBatches > 0 ||
         reclaimedLanes > 0 ||
-        expiredLegacyActorReceipts > 0
+        expiredLegacyActorReceipts > 0 ||
+        retiredCheckpointDeletions > 0
       ) {
         logger.info('[agent-triggers] recovered durable delivery maintenance', {
           purgedUsers,
@@ -410,6 +442,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
           recoveredBatches,
           reclaimedLanes,
           expiredLegacyActorReceipts,
+          retiredCheckpointDeletions,
         });
       }
     })
@@ -455,6 +488,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
 
   return {
     initialize: (options = {}) => {
+      backgroundCompletionResultBatchSize = options.completionResultBatchSize ?? 8;
       boundOrigin = selfOriginFromAddress(options.address) ?? boundOrigin;
       if (deps.methods == null || deliveryReady) {
         return Promise.resolve();
@@ -588,6 +622,22 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
           leaseUntil,
         }),
       ),
+    persistBackgroundToolResult: (input) =>
+      runAsSystem(async () => {
+        const persist = requireMethods().persistAgentBackgroundToolResult;
+        return persist == null ? false : persist(input);
+      }),
+    getBackgroundToolResultClaim: (input) =>
+      runAsSystem(async () => {
+        const getClaim = requireMethods().getAgentBackgroundToolResultClaim;
+        return getClaim == null ? null : getClaim(input);
+      }),
+    getBackgroundCompletionResultBatchSize: () => backgroundCompletionResultBatchSize,
+    releaseBackgroundToolResultClaims: (input) =>
+      runAsSystem(async () => {
+        const release = requireMethods().releaseAgentBackgroundToolResultClaims;
+        return release == null ? false : release(input);
+      }),
     drainUser,
     prepareUserPurge: (userId, fenceStartedAt, tenantId) =>
       runAsSystem(async () =>

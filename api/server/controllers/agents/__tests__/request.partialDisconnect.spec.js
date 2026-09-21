@@ -63,7 +63,16 @@ jest.mock('@librechat/api', () => ({
   })),
   buildMessageFiles: jest.fn(() => []),
   resolveTitleTiming: jest.fn(() => 'immediate'),
+  createConvoPersistenceSignal: jest.requireActual('@librechat/api').createConvoPersistenceSignal,
+  recoverTurnMessageReference: jest.requireActual('@librechat/api').recoverTurnMessageReference,
   resolveConversationAnchor: jest.requireActual('@librechat/api').resolveConversationAnchor,
+  resolveRunCodeWorkspaces: jest.requireActual('@librechat/api').resolveRunCodeWorkspaces,
+  shouldPersistCodeWorkspaceInitializationError:
+    jest.requireActual('@librechat/api').shouldPersistCodeWorkspaceInitializationError,
+  resolvePersistableCodeEnvironmentDecision: (...args) =>
+    jest.requireActual('@librechat/api').resolvePersistableCodeEnvironmentDecision(...args),
+  getSafeErrorMetadata: jest.requireActual('@librechat/api').getSafeErrorMetadata,
+  getSafeErrorText: jest.requireActual('@librechat/api').getSafeErrorText,
   GenerationJobManager: mockGenerationJobManager,
   getReferencedQuotes: jest.fn(() => null),
   cleanupMCPRequestContext: jest.fn(),

@@ -3,6 +3,10 @@ import {
   createOpenIDRefreshFlightMethods,
   type OpenIDRefreshFlightMethods,
 } from './openidRefreshFlight';
+export {
+  createMCPAuthorizationFenceRetryStorage,
+  type MCPAuthorizationFenceRetryStorage,
+} from './mcpAuthorizationFenceRetry';
 import {
   createRefreshTokenBridgeMethods,
   type RefreshTokenBridgeMethods,
@@ -58,6 +62,7 @@ import { createCategoriesMethods, type CategoriesMethods } from './categories';
 import { createPresetMethods, type PresetMethods } from './preset';
 /* Tier 2 — Moderate (service deps injected) */
 import { createConversationTagMethods, type ConversationTagMethods } from './conversationTag';
+import { createConversationImportMethods, type ConversationImportMethods } from './import';
 import {
   createMessageMethods,
   CLIENT_MESSAGE_SELECT,
@@ -68,6 +73,8 @@ import {
   type SubagentTaskResultClaim,
   type BackgroundToolResultClaim,
   type BackgroundToolResultRecord,
+  type ConversationTraceRefs,
+  type SampledTraceMessage,
 } from './message';
 import {
   createConversationMethods,
@@ -121,6 +128,8 @@ import {
   type ListSkillsByAccessResult,
   type UpdateSkillResult,
   type ValidationIssue,
+  type DeleteSkillCleanupStep,
+  type DeleteSkillResult,
 } from './skill';
 import { createScheduleMethods, type ScheduleMethods } from './schedule';
 import {
@@ -147,7 +156,14 @@ import type {
   UpsertSkillSyncCredentialInput,
 } from './skillSync';
 /* Tier 5 — Agent */
-import { createAgentMethods, type AgentMethods, type AgentDeps } from './agent';
+import {
+  createAgentMethods,
+  type AgentMethods,
+  type AgentDeps,
+  type AgentGraphNode,
+  type AgentGraphAccess,
+  type AgentGraphAccessContext,
+} from './agent';
 /* Config */
 import { createConfigMethods, type ConfigMethods } from './config';
 import {
@@ -232,6 +248,7 @@ export type AllMethods = UserMethods &
   CategoriesMethods &
   PresetMethods &
   ConversationTagMethods &
+  ConversationImportMethods &
   MessageMethods &
   ConversationMethods &
   ChatProjectMethods &
@@ -308,6 +325,10 @@ export function createMethods(
     getMessages: messageMethods.getMessages,
     deleteMessages: messageMethods.deleteMessages,
     searchMessages: messageMethods.searchMessages,
+    eraseAgentTriggerDeliveryConversationResults:
+      agentTriggerDeliveryMethods.eraseAgentTriggerDeliveryConversationResults,
+    prepareAgentTriggerConversationResultErasure:
+      agentTriggerDeliveryMethods.prepareAgentTriggerConversationResultErasure,
     deleteAgentQueuedTurns: async (user, conversations) => {
       /** Queued-turn ownership is ObjectId-backed. Conversation methods also
        * support synthetic/non-ObjectId owners in embedded integrations and
@@ -420,6 +441,8 @@ export function createMethods(
     removeAllPermissions,
     getActions: actionMethods.getActions,
     getSoleOwnedResourceIds: aclEntryMethods.getSoleOwnedResourceIds,
+    getUserPrincipals: userGroupMethods.getUserPrincipals,
+    findAccessibleResources: aclEntryMethods.findAccessibleResources,
     isExternalSkillId: deps.isExternalSkillId,
   };
   const agentMethods = createAgentMethods(mongoose, agentDeps);
@@ -454,6 +477,7 @@ export function createMethods(
     ...createPresetMethods(mongoose),
     /* Tier 2 */
     ...createConversationTagMethods(mongoose),
+    ...createConversationImportMethods(mongoose),
     ...messageMethods,
     ...conversationMethods,
     ...createChatProjectMethods(mongoose),
@@ -508,6 +532,7 @@ export type {
   CategoriesMethods,
   PresetMethods,
   ConversationTagMethods,
+  ConversationImportMethods,
   MessageMethods,
   ParentSubagentTaskRecord,
   ParentSubagentThreadRecord,
@@ -515,6 +540,8 @@ export type {
   SubagentTaskResultClaim,
   BackgroundToolResultClaim,
   BackgroundToolResultRecord,
+  ConversationTraceRefs,
+  SampledTraceMessage,
   ConversationMethods,
   AgentEventActorReconciliationStorageMetrics,
   ChatProjectMethods,
@@ -532,6 +559,8 @@ export type {
   ListSkillsByAccessResult,
   UpdateSkillResult,
   ValidationIssue,
+  DeleteSkillCleanupStep,
+  DeleteSkillResult,
   SkillSyncStatusInput,
   SkillSyncCredentialSummary,
   UpsertSkillSyncCredentialInput,
@@ -543,6 +572,9 @@ export type {
   AgentEventActorReceiptStorageMetrics,
   ScheduleMethods,
   AgentMethods,
+  AgentGraphNode,
+  AgentGraphAccess,
+  AgentGraphAccessContext,
   ConfigMethods,
   MCPAuthorityMethods,
   MCPAuthorityMethodHooks,

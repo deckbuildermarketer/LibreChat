@@ -1,5 +1,6 @@
 const {
   createAgentTriggerService,
+  createCheckpointDeletionReclaimer,
   createAgentContinuationResolver,
   createAgentEventContinueResolver,
   createSubagentCompletionWakeupResolver,
@@ -27,6 +28,7 @@ const subagentCompletionAdapter = createSubagentCompletionWakeupResolver({
 const backgroundToolCompletionAdapter = createBackgroundToolCompletionWakeupResolver({
   methods,
   getGenerationJob: (conversationId) => GenerationJobManager.getJob(conversationId),
+  getResultBatchSize: () => service.getBackgroundCompletionResultBatchSize(),
 });
 const eventActorAdapter = createAgentEventContinueResolver({
   methods,
@@ -44,6 +46,9 @@ const queuedTurnLifecycle = createAgentQueuedTurnLifecycle({
 
 service = createAgentTriggerService({
   methods,
+  reclaimCheckpointDeletions: createCheckpointDeletionReclaimer((userId, tenantId) =>
+    GenerationJobManager.getAccountCleanupJobIdsForUser(userId, tenantId),
+  ),
   isPrincipalActive: methods.isAgentTriggerPrincipalActive,
   supportsDetachedActionCompletion: () => GenerationJobManager.supportsDetachedAgentEventActions,
   settleSourceBeforeDeadLetter: queuedTurnLifecycle.settleBeforeDeadLetter,
@@ -82,6 +87,9 @@ module.exports = {
   requeueAgentTrigger: service.requeue,
   retireAgentTrigger: service.retire,
   renewAgentTriggerProducerLease: service.renewProducerLease,
+  persistAgentBackgroundToolResult: service.persistBackgroundToolResult,
+  getAgentBackgroundToolResultClaim: service.getBackgroundToolResultClaim,
+  releaseAgentBackgroundToolResultClaims: service.releaseBackgroundToolResultClaims,
   drainAgentTriggerDeliveriesForUser: service.drainUser,
   prepareAgentTriggerUserPurge: service.prepareUserPurge,
   cancelAgentTriggerUserPurge: service.cancelUserPurge,

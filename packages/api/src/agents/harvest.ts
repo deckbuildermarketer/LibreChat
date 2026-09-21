@@ -33,14 +33,20 @@ export interface ProcessedCodeOutput {
 export interface BackgroundToolResultState {
   taskId: string;
   toolName: string;
+  /** Cancelled executions retain the pre-existing durable `error` state so
+   * older replicas can still claim them during a rolling deploy. */
   status: 'completed' | 'error';
+  cancelled?: true;
   settledAt: Date;
   /** This exact task owns a pre-registered automatic continuation delivery. */
   completionWakeup?: true;
+  /** Independent receipts retain task-local delivery ownership. */
+  completionReceipt?: true;
   resultClaim?: {
     kind: 'manual' | 'wakeup';
     claimId: string;
     claimedAt: Date;
+    generationId?: string;
   };
 }
 
