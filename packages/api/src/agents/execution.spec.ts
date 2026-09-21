@@ -1,9 +1,13 @@
 import winston from 'winston';
 import { Writable } from 'node:stream';
 import { logger } from '@librechat/data-schemas';
+import type { CodeExecutionContext } from './execution';
 import {
+  assertCodeExecutionApprovalBinding,
+  captureCodeExecutionApprovalBinding,
   codeExecutionAuthHeaders,
   codeExecutionHeaders,
+  getCodeWorkspaceSelections,
   resolveCodeExecutionContext,
 } from './execution';
 
@@ -139,6 +143,33 @@ describe('resolveCodeExecutionContext', () => {
     );
     expect(context.runtimeSessionHint).toMatch(/^v3:[a-f0-9]{12}:agent-user:/);
     expect(context.executionRouteKey).toMatch(/^stateful:[a-f0-9]{32}$/);
+  });
+
+  it('derives a stable opaque worktree identity from authenticated conversation scope', () => {
+    const resolve = (conversationId: string, userId = 'user-1') =>
+      resolveCodeExecutionContext({
+        statefulSessions: true,
+        environmentId: 'my-vm',
+        environments: [
+          {
+            id: 'my-vm',
+            name: 'My VM',
+            type: 'attached',
+            baseURL: 'https://bridge.example/v1',
+            workerId: 'worker',
+            owner: 'deployment',
+          },
+        ],
+        userId,
+        conversationId,
+      }).conversationWorkspaceInstanceId;
+
+    const first = resolve('conversation-1');
+    expect(first).toMatch(/^[a-f0-9]{64}$/);
+    expect(resolve('conversation-1')).toBe(first);
+    expect(resolve('conversation-2')).not.toBe(first);
+    expect(resolve('conversation-1', 'user-2')).not.toBe(first);
+    expect(first).not.toContain('conversation-1');
   });
 
   it('routes a deployment worker declared in pairing metadata', () => {
@@ -309,6 +340,32 @@ describe('resolveCodeExecutionContext', () => {
     expect(context.baseUrl).toBe('https://bridge.example/v1');
   });
 
+  it('uses the stateful deployment when configured environments have no default', () => {
+    process.env.LIBRECHAT_CODE_BASEURL_STATEFUL = 'http://code-stateful.test/v1';
+    const context = resolveCodeExecutionContext({
+      statefulSessions: true,
+      environments: [
+        {
+          id: 'personal-vm',
+          name: 'Personal VM',
+          type: 'attached',
+          baseURL: 'https://bridge.example/v1',
+          owner: 'principal',
+          workerId: 'personal-worker',
+        },
+      ],
+      userId: 'user-1',
+    });
+
+    expect(context).toEqual(
+      expect.objectContaining({
+        baseUrl: 'http://code-stateful.test/v1',
+        environmentId: undefined,
+        runtimeSessionHint: 'v2:user:b5729fb0e3ca12e7a61ff6857b99d98e',
+      }),
+    );
+  });
+
   it('fails closed when an agent references an unknown configured environment', () => {
     expect(() =>
       resolveCodeExecutionContext({
@@ -318,6 +375,199 @@ describe('resolveCodeExecutionContext', () => {
         userId: 'user-1',
       }),
     ).toThrow('Stateful code environment "missing-vm" is not configured');
+  });
+});
+
+describe('stateful code approval target binding', () => {
+  const context = (overrides: Partial<CodeExecutionContext> = {}): CodeExecutionContext => ({
+    baseUrl: 'https://bridge.example/v1',
+    codeSessionKey: 'execute_code:stateful:route-a:session-a',
+    executionProfile: 'stateful' as const,
+    executionRouteKey: 'stateful:route-a',
+    runtimeSessionHint: 'v3:environment-a:agent-user:session-a',
+    statefulSessions: true,
+    environmentId: 'environment-a',
+    environmentType: 'attached' as const,
+    bridgeWorkerId: 'worker-a',
+    codeWorkspace: {
+      environmentId: 'environment-a',
+      workspaceId: 'project-a',
+      operations: ['read_file', 'execute_command'],
+    },
+    ...overrides,
+  });
+
+  it('ignores operation ordering but binds actual permission changes', () => {
+    const original = context();
+    const binding = (ctx: CodeExecutionContext) =>
+      captureCodeExecutionApprovalBinding([{ id: 'a', codeExecutionContext: ctx }]);
+    expect(
+      binding(
+        context({
+          codeWorkspace: {
+            ...original.codeWorkspace!,
+            operations: ['execute_command', 'read_file'],
+          },
+        }),
+      ),
+    ).toEqual(binding(original));
+    expect(
+      binding(
+        context({ codeWorkspace: { ...original.codeWorkspace!, operations: ['read_file'] } }),
+      ),
+    ).not.toEqual(binding(original));
+  });
+
+  it('requires new approval when an environment action definition changes', () => {
+    const original = context();
+    original.codeWorkspace!.environment = { fingerprint: 'a'.repeat(64), actions: ['typecheck'] };
+    const expected = captureCodeExecutionApprovalBinding([
+      { id: 'a', codeExecutionContext: original },
+    ]);
+    const updated = context({
+      codeWorkspace: {
+        ...original.codeWorkspace!,
+        environment: { fingerprint: 'b'.repeat(64), actions: ['typecheck'] },
+      },
+    });
+    expect(() =>
+      assertCodeExecutionApprovalBinding(expected, [{ id: 'a', codeExecutionContext: updated }]),
+    ).toThrow('changed while this action awaited approval');
+  });
+
+  it('requires new approval when the conversation worktree changes', () => {
+    const original = context();
+    original.codeWorkspace!.workspaceInstanceId = 'a'.repeat(64);
+    const expected = captureCodeExecutionApprovalBinding([
+      { id: 'a', codeExecutionContext: original },
+    ]);
+    const updated = context({
+      codeWorkspace: {
+        ...original.codeWorkspace!,
+        workspaceInstanceId: 'b'.repeat(64),
+      },
+    });
+
+    expect(() =>
+      assertCodeExecutionApprovalBinding(expected, [{ id: 'a', codeExecutionContext: updated }]),
+    ).toThrow('changed while this action awaited approval');
+  });
+
+  it('captures only opaque, canonical identities for stateful targets', () => {
+    const binding = captureCodeExecutionApprovalBinding([
+      {
+        id: 'agent-z',
+        codeExecutionContext: context({ bridgeWorkerId: 'worker-z' }),
+      },
+      {
+        id: 'agent-a',
+        codeExecutionContext: context(),
+      },
+      {
+        id: 'stateless',
+        codeExecutionContext: {
+          baseUrl: 'https://default.example/v1',
+          codeSessionKey: 'execute_code',
+          executionProfile: 'default',
+          statefulSessions: false,
+        },
+      },
+    ]);
+
+    expect(binding).toEqual({
+      version: 1,
+      targets: [
+        { agentId: 'agent-a', targetHash: expect.stringMatching(/^[a-f0-9]{64}$/) },
+        { agentId: 'agent-z', targetHash: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      ],
+    });
+    const serialized = JSON.stringify(binding);
+    expect(serialized).not.toContain('bridge.example');
+    expect(serialized).not.toContain('worker-a');
+    expect(serialized).not.toContain('session-a');
+  });
+
+  it('accepts the same targets regardless of traversal order', () => {
+    const first = { id: 'agent-a', codeExecutionContext: context() };
+    const second = {
+      id: 'agent-b',
+      codeExecutionContext: context({ bridgeWorkerId: 'worker-b' }),
+    };
+    const binding = captureCodeExecutionApprovalBinding([first, second]);
+
+    expect(() => assertCodeExecutionApprovalBinding(binding, [second, first])).not.toThrow();
+  });
+
+  it('deduplicates snapshots and orders targets independently of replica locale', () => {
+    const laterByCodeUnit = {
+      id: 'agent-ä',
+      codeExecutionContext: context({ bridgeWorkerId: 'worker-umlaut' }),
+    };
+    const earlierByCodeUnit = {
+      id: 'agent-z',
+      codeExecutionContext: context({ bridgeWorkerId: 'worker-z' }),
+    };
+
+    const binding = captureCodeExecutionApprovalBinding([
+      laterByCodeUnit,
+      earlierByCodeUnit,
+      earlierByCodeUnit,
+    ]);
+
+    expect(binding?.targets.map((target) => target.agentId)).toEqual(['agent-z', 'agent-ä']);
+  });
+
+  it.each([
+    ['route', { executionRouteKey: 'stateful:route-b' }],
+    ['worker', { bridgeWorkerId: 'worker-b' }],
+    ['workspace session', { runtimeSessionHint: 'v3:environment-a:agent-user:session-b' }],
+    [
+      'selected directory',
+      {
+        codeWorkspace: {
+          environmentId: 'environment-a',
+          workspaceId: 'project-b',
+          operations: ['read_file', 'execute_command'],
+        },
+      },
+    ],
+    ['base URL', { baseUrl: 'https://replacement.example/v1' }],
+  ])('rejects a changed %s before execution', (_label, overrides) => {
+    const binding = captureCodeExecutionApprovalBinding([
+      { id: 'agent-a', codeExecutionContext: context() },
+    ]);
+
+    expect(() =>
+      assertCodeExecutionApprovalBinding(binding, [
+        {
+          id: 'agent-a',
+          codeExecutionContext: context(overrides as Partial<CodeExecutionContext>),
+        },
+      ]),
+    ).toThrow('Retry the request and review the action again');
+  });
+
+  it('fails closed for a malformed persisted binding', () => {
+    expect(() =>
+      assertCodeExecutionApprovalBinding(
+        { version: 1, targets: [{ agentId: 'agent-a', targetHash: 'not-a-hash' }] },
+        [{ id: 'agent-a', codeExecutionContext: context() }],
+      ),
+    ).toThrow('attached code environment changed');
+  });
+
+  it('keeps pre-binding pauses backward compatible', () => {
+    expect(() =>
+      assertCodeExecutionApprovalBinding(undefined, [
+        { id: 'agent-a', codeExecutionContext: context() },
+      ]),
+    ).not.toThrow();
+  });
+
+  it('persists only the environment/workspace pair, not live capabilities', () => {
+    expect(getCodeWorkspaceSelections([context()])).toEqual([
+      { environmentId: 'environment-a', workspaceId: 'project-a' },
+    ]);
   });
 });
 

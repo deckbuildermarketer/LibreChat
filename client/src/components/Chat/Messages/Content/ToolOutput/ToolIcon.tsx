@@ -1,6 +1,7 @@
 import { Constants, isActionTool, splitToolCallName } from 'librechat-data-provider';
 import {
   Terminal,
+  Users,
   Globe,
   ImageIcon,
   ArrowRightLeft,
@@ -8,6 +9,7 @@ import {
   FileText,
   MessageCircleQuestion,
   ScrollText,
+  Brain,
   Zap,
   Wrench,
 } from 'lucide-react';
@@ -24,12 +26,14 @@ export type ToolIconType =
   | 'execute_code'
   | 'web_search'
   | 'image_gen'
+  | 'subagent'
   | 'agent_handoff'
   | 'file_search'
   | 'skill'
   | 'read_file'
   | 'bash_tool'
   | 'ask_user_question'
+  | 'memory'
   | 'action'
   | 'generic';
 
@@ -39,11 +43,13 @@ const ICON_MAP: Record<ToolIconType, React.ComponentType<{ className?: string }>
   web_search: Globe,
   image_gen: ImageIcon,
   agent_handoff: ArrowRightLeft,
+  subagent: Users,
   file_search: FileSearch,
   skill: ScrollText,
   read_file: FileText,
   bash_tool: BashIcon,
   ask_user_question: MessageCircleQuestion,
+  memory: Brain,
   action: Zap,
   generic: Wrench,
 };
@@ -79,8 +85,14 @@ export function getToolIconType(name: string): ToolIconType {
   if (name === 'bash_tool' || name === Constants.BASH_PROGRAMMATIC_TOOL_CALLING) {
     return 'bash_tool';
   }
+  if (name === Constants.SUBAGENT) {
+    return 'subagent';
+  }
   if (name === 'ask_user_question') {
     return 'ask_user_question';
+  }
+  if (name === 'set_memory' || name === 'delete_memory') {
+    return 'memory';
   }
   if (name.startsWith(Constants.LC_TRANSFER_TO_)) {
     return 'agent_handoff';

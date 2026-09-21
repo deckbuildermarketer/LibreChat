@@ -1,5 +1,5 @@
 import React from 'react';
-import { useStore } from 'jotai';
+import { useStore, useAtomValue } from 'jotai';
 import { RecoilRoot, useRecoilCallback } from 'recoil';
 import { renderHook, act } from '@testing-library/react';
 import {
@@ -27,6 +27,7 @@ import {
 } from '~/components/Chat/Subagents/state';
 import { ptcTraceByToolCallId, ptcTraceKey, PTC_TRACE_MAX_ENTRIES } from '~/store/ptc';
 import { resolveAskUserQuestionPart } from '~/utils/approval';
+import { sandboxStartingByToolCallId } from '~/store/sandbox';
 import useStepHandler from '~/hooks/SSE/useStepHandler';
 import { IsolatedAtomStore } from 'test/harness';
 
@@ -1116,6 +1117,93 @@ describe('useStepHandler', () => {
         groupId: 2,
       });
     });
+
+    it('carries a steer landed on the placeholder into the renamed response', () => {
+      const user = createUserMessage({ messageId: 'user-1' });
+      const steerPart = {
+        type: ContentTypes.STEER,
+        [ContentTypes.STEER]: 'change of plan',
+        steerId: 'steer-1',
+      } as TMessageContentParts;
+      const placeholder = createResponseMessage({
+        messageId: 'user-1_',
+        parentMessageId: 'user-1',
+        content: [steerPart],
+      });
+      mockGetMessages.mockReturnValue([user, placeholder]);
+
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      const submission = createSubmission({
+        userMessage: user,
+        messages: [user, placeholder],
+        initialResponse: createResponseMessage({ messageId: 'user-1_', parentMessageId: 'user-1' }),
+      });
+
+      act(() => {
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP,
+            data: createRunStep({ runId: 'server-resp', index: 1 }),
+          },
+          submission,
+        );
+      });
+
+      const calls = mockSetMessages.mock.calls;
+      const written = calls[calls.length - 1][0] as TMessage[];
+      expect(written.map((message) => message.messageId)).toEqual(['user-1', 'server-resp']);
+      expect(written[1].content?.[0]).toEqual(
+        expect.objectContaining({ type: ContentTypes.STEER, steerId: 'steer-1' }),
+      );
+    });
+
+    it('seeds a regenerated response from the submission placeholder, steer included', () => {
+      const user = createUserMessage({ messageId: 'user-1' });
+      const priorResponse = createResponseMessage({
+        messageId: 'prior-resp',
+        parentMessageId: 'user-1',
+        content: [{ type: ContentTypes.TEXT, text: 'old answer' }],
+      });
+      const steerPart = {
+        type: ContentTypes.STEER,
+        [ContentTypes.STEER]: 'change of plan',
+        steerId: 'steer-1',
+      } as TMessageContentParts;
+      const placeholder = createResponseMessage({
+        messageId: 'user-1_',
+        parentMessageId: 'user-1',
+        content: [steerPart],
+      });
+      mockGetMessages.mockReturnValue([user, priorResponse, placeholder]);
+
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      const submission = createSubmission({
+        userMessage: user,
+        isRegenerate: true,
+        messages: [user, priorResponse],
+        initialResponse: placeholder,
+      });
+
+      act(() => {
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP,
+            data: createRunStep({ runId: 'server-resp', index: 1 }),
+          },
+          submission,
+        );
+      });
+
+      const calls = mockSetMessages.mock.calls;
+      const written = calls[calls.length - 1][0] as TMessage[];
+      const ids = written.map((message) => message.messageId);
+      expect(ids).toContain('server-resp');
+      expect(ids).not.toContain('user-1_');
+      const response = written.find((message) => message.messageId === 'server-resp');
+      expect(response?.content?.[0]).toEqual(
+        expect.objectContaining({ type: ContentTypes.STEER, steerId: 'steer-1' }),
+      );
+    });
   });
 
   describe('on_agent_update event', () => {
@@ -1789,6 +1877,64 @@ describe('useStepHandler', () => {
       );
       expect(toolCallContent?.tool_call?.auth).toEqual('oauth-token-123');
     });
+  });
+
+  describe('sandbox startup state', () => {
+    const wrapper = ({ children }: React.PropsWithChildren) =>
+      React.createElement(RecoilRoot, null, React.createElement(IsolatedAtomStore, null, children));
+
+    it.each(['completed', 'cleanup'] as const)(
+      'clears the Jotai startup signal on %s',
+      (terminal) => {
+        mockGetMessages.mockReturnValue([createResponseMessage()]);
+        const { result } = renderHook(
+          () => ({
+            ...useStepHandler(createHookParams()),
+            starting: useAtomValue(sandboxStartingByToolCallId('tool-call-1')),
+          }),
+          { wrapper },
+        );
+        const submission = createSubmission();
+        expect(result.current.starting).toBe(false);
+        act(() => {
+          result.current.stepHandler(
+            { event: StepEvents.ON_RUN_STEP, data: createToolCallRunStep() },
+            submission,
+          );
+          result.current.stepHandler(
+            { event: StepEvents.ON_SANDBOX_STARTING, data: { tool_call_id: 'tool-call-1' } },
+            submission,
+          );
+        });
+        expect(result.current.starting).toBe(true);
+        act(() => {
+          if (terminal === 'cleanup') {
+            result.current.clearStepMaps();
+            return;
+          }
+          result.current.stepHandler(
+            {
+              event: StepEvents.ON_RUN_STEP_COMPLETED,
+              data: {
+                result: {
+                  id: 'step-tool-1',
+                  index: 0,
+                  tool_call: {
+                    id: 'tool-call-1',
+                    name: 'test_tool',
+                    args: '{}',
+                    output: 'done',
+                    type: ToolCallTypes.TOOL_CALL,
+                  },
+                } as Agents.ToolEndEvent,
+              },
+            },
+            submission,
+          );
+        });
+        expect(result.current.starting).toBe(false);
+      },
+    );
   });
 
   describe('on_run_step_completed event', () => {
@@ -2711,7 +2857,7 @@ describe('useStepHandler', () => {
       expect(summaryPart).toMatchObject({ summarizing: false });
     });
 
-    it('ON_SUMMARIZE_COMPLETE error removes summarizing parts', () => {
+    it('ON_SUMMARIZE_COMPLETE error finalizes the part in place without splicing it out', () => {
       mockLastAnnouncementTimeRef.current = Date.now();
       const responseMessage = createResponseMessage();
       mockGetMessages.mockReturnValue([responseMessage]);
@@ -2782,11 +2928,21 @@ describe('useStepHandler', () => {
       expect(mockSetMessages).toHaveBeenCalled();
       const lastCall = mockSetMessages.mock.calls[mockSetMessages.mock.calls.length - 1][0];
       const responseMsg = lastCall.find((m: TMessage) => m.messageId === 'response-msg-1');
+      /**
+       * Failed rounds must keep their slot: splicing shifts every later part
+       * under the index-keyed renderer and breaks the position == step-index
+       * invariant that updateContent writes rely on. The part is finalized in
+       * place with its streamed content preserved.
+       */
       const summaryParts =
         responseMsg?.content?.filter(
           (c: TMessageContentParts) => c.type === ContentTypes.SUMMARY,
         ) ?? [];
-      expect(summaryParts).toHaveLength(0);
+      expect(summaryParts).toHaveLength(1);
+      expect((summaryParts[0] as SummaryContentPart).summarizing).toBe(false);
+      expect((summaryParts[0] as SummaryContentPart).content).toEqual([
+        { type: ContentTypes.TEXT, text: 'partial' },
+      ]);
     });
 
     it('ON_SUMMARIZE_COMPLETE returns early when target message not in messageMap', () => {

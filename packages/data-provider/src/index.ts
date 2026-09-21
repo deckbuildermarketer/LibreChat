@@ -14,11 +14,14 @@ export {
   MAX_SUBAGENT_GRAPH_NODES,
   MAX_SUBAGENT_RUN_CONFIGS,
 } from './dbm-limits';
+export * from './footer';
 export * from './langchain';
 export * from './filters';
 export * from './file-config';
+export * from './resolve-llm-delivery-path';
 /* messages  */
 export * from './messages';
+export * from './errors';
 /* run steps */
 export * from './runSteps';
 /* artifacts  */
@@ -37,6 +40,8 @@ export * from './roles';
 export * from './types';
 export * from './types/agents';
 export * from './types/assistants';
+export * from './types/content';
+export * from './types/tools';
 export * from './types/files';
 export * from './types/mcpServers';
 export * from './types/mutations';
@@ -48,6 +53,7 @@ export * from './types/runs';
 export * from './types/web';
 export * from './types/graph';
 export * from './types/insights';
+export * from './types/traces';
 export * from './types/subagents';
 export * from './types/queuedTurns';
 /* access permissions */
@@ -80,6 +86,9 @@ export { default as createPayload } from './createPayload';
 export * from './feedback';
 export * from './parameterSettings';
 export * from './agentToolOptions';
+export * from './backgroundResults';
 /* code-execution sandbox */
 export * from './codeEnvRef';
 export * from './code/worker';
+export * from './code/approval';
+export * from './code/workspace';

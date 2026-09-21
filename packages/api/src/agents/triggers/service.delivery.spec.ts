@@ -1,4 +1,5 @@
 import {
+  AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
   AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
@@ -180,6 +181,7 @@ describe('durable agent trigger service', () => {
     expect(methods.claimNextAgentTriggerDelivery).toHaveBeenCalledWith(
       expect.objectContaining({
         workerCapabilities: [
+          AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
           AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1,
           AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
           AGENT_TRIGGER_WORKER_CAPABILITY_DETACHED_ACTION_V1,
@@ -218,6 +220,7 @@ describe('durable agent trigger service', () => {
     expect(methods.claimNextAgentTriggerDelivery).toHaveBeenCalledWith(
       expect.objectContaining({
         workerCapabilities: [
+          AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
           AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_V1,
           AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
         ],
@@ -384,6 +387,34 @@ describe('durable agent trigger service', () => {
 
     expect(expireLegacyAgentEventActorReceipts).toHaveBeenCalledWith(expect.any(Date), 17);
     await service.stop();
+  });
+
+  it('runs checkpoint evidence maintenance in system context and waits on shutdown', async () => {
+    let finish!: () => void;
+    const pending = new Promise<number>((resolve) => {
+      finish = () => resolve(1);
+    });
+    const reclaimCheckpointDeletions = jest.fn(() => {
+      expect(getTenantId()).toBe(SYSTEM_TENANT_ID);
+      return pending;
+    });
+    const service = createAgentTriggerService({
+      methods: deliveryMethods(),
+      reclaimCheckpointDeletions,
+      purgeRecoveryLimit: 17,
+      deliveryOptions: { concurrency: 1, tickMs: 60_000 },
+    });
+    await service.initialize({ address: { address: '127.0.0.1', family: 'IPv4', port: 3080 } });
+    expect(reclaimCheckpointDeletions).toHaveBeenCalledWith(17);
+    let stopped = false;
+    const stop = service.stop().then(() => {
+      stopped = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(stopped).toBe(false);
+    finish();
+    await stop;
+    expect(stopped).toBe(true);
   });
 
   it('reclaims lanes even when another maintenance step rejects', async () => {

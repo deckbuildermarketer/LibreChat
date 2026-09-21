@@ -4,7 +4,12 @@ import { Permissions, PermissionTypes } from 'librechat-data-provider';
 import { CallToolResultSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import type { RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import type { TokenMethods, IUser } from '@librechat/data-schemas';
-import type { OboTokenResolver, OboTrustChecker, UpstreamTokenProvider } from '~/mcp/oauth/obo';
+import type {
+  OboTokenResolver,
+  OboTrustChecker,
+  UpstreamTokenProvider,
+  UpstreamTokenProviderResolver,
+} from '~/mcp/oauth/obo';
 import type { AuthIdentityContext } from '~/utils/identity';
 import type { GraphTokenResolver } from '~/utils/graph';
 import type { FlowStateManager } from '~/flow/manager';
@@ -13,29 +18,34 @@ import type { RequestBody } from '~/types';
 import type * as t from './types';
 import {
   getMissingRuntimeBodyPlaceholderFields,
+  toCatalogConnectionConfig,
+  applyRequestHeaders,
   createDeadlineAbortSignal,
   canUseAppConnection,
   isOAuthServer,
   isUserSourced,
   requiresEphemeralUserConnection,
   requiresOAuthMachinery,
-  requiresUserScopedConnection,
   resolveServerInstructions,
 } from './utils';
 import { getMCPAppToolsPublicationGeneration, getMCPToolsChangedGeneration } from './toolsChanged';
+import { MCPAuthenticationRejectedError, isMCPTransportAuthenticationError } from './errors';
+import { resolveDirectOpenIDBearerConfig, usesDirectOpenIDBearerRecovery } from './openid';
+import { createLazyOboUpstreamTokenProvider, awaitOboOperation } from '~/mcp/oauth/obo';
 import { MCPServersInitializer } from './registry/MCPServersInitializer';
 import { OboTokenResolutionError, resolveOboToken } from '~/mcp/oauth';
+import { MCPServerCatalogRecoveryTracker } from './catalog/recovery';
 import { MCPServerInspector } from './registry/MCPServerInspector';
 import { MCPServersRegistry } from './registry/MCPServersRegistry';
 import { UserConnectionManager } from './UserConnectionManager';
 import { ConnectionsRepository } from './ConnectionsRepository';
 import { MCPConnectionFactory } from './MCPConnectionFactory';
 import { processMCPEnv, isPluginSourced } from '~/utils/env';
+import { compactMCPResult } from './dbmResultCompaction';
 import { OAuthLifecycleRelay } from './oauth/pending';
 import { preProcessGraphTokens } from '~/utils/graph';
-import { isAbortError } from '~/utils/errors';
+import { isOwnedAbortError } from '~/utils/errors';
 import { formatToolContent } from './parsers';
-import { compactMCPResult } from './dbmResultCompaction';
 import { MCPConnection } from './connection';
 import { mcpConfig } from './mcpConfig';
 
@@ -71,26 +81,67 @@ type OAuthReconnectResult =
 const OAUTH_RECOVERY_RECONNECT_ATTEMPTS = 3;
 const OAUTH_RECOVERY_RECONNECT_DELAY_MS = 2000;
 
+function getDiscoveryAuthenticationKind(
+  serverConfig: t.ParsedServerConfig,
+  observedOAuthRequired = false,
+): 'oauth' | 'obo' | 'server' {
+  if (serverConfig.obo != null) {
+    return 'obo';
+  }
+  return isOAuthServer(serverConfig) ||
+    (observedOAuthRequired && serverConfig.requiresOAuth !== false)
+    ? 'oauth'
+    : 'server';
+}
+
 /**
  * Centralized manager for MCP server connections and tool execution.
  * Extends UserConnectionManager to handle both app-level and user-specific connections.
  */
 export class MCPManager extends UserConnectionManager {
   private static instance: MCPManager | null;
+  private readonly catalogRecoveryTracker: MCPServerCatalogRecoveryTracker;
+  private readonly recoveryCancellation = new WeakMap<
+    Promise<void>,
+    { controller: AbortController; waiters: number; connection: MCPConnection }
+  >();
+
   private readonly oauthRecoveries = new WeakMap<
     MCPConnection,
     {
       promise: Promise<void>;
-      callbacks: OAuthLifecycleRelay;
+      callbacks?: OAuthLifecycleRelay;
       allowsTakeover: boolean;
       takeoverClaimed?: boolean;
+      directBearerRecoveryConsumed?: boolean;
+      directBearerRecoveryState?: t.DirectBearerRecoveryState;
     }
   >();
 
+  constructor(
+    catalogRecoveryMaxStateEntries?: number,
+    catalogRecoveryMaxDetachedDiscoveries?: number,
+  ) {
+    super();
+    this.catalogRecoveryTracker = new MCPServerCatalogRecoveryTracker(
+      catalogRecoveryMaxStateEntries,
+      catalogRecoveryMaxDetachedDiscoveries,
+    );
+  }
+
   /** Creates and initializes the singleton MCPManager instance */
-  public static async createInstance(configs: t.MCPServers): Promise<MCPManager> {
+  public static async createInstance(
+    configs: t.MCPServers,
+    options?: {
+      catalogRecoveryMaxStateEntries?: number;
+      catalogRecoveryMaxDetachedDiscoveries?: number;
+    },
+  ): Promise<MCPManager> {
     if (MCPManager.instance) throw new Error('MCPManager has already been initialized.');
-    MCPManager.instance = new MCPManager();
+    MCPManager.instance = new MCPManager(
+      options?.catalogRecoveryMaxStateEntries,
+      options?.catalogRecoveryMaxDetachedDiscoveries,
+    );
     await MCPManager.instance.initialize(configs);
     return MCPManager.instance;
   }
@@ -107,11 +158,30 @@ export class MCPManager extends UserConnectionManager {
     this.appConnections = new ConnectionsRepository(undefined);
   }
 
+  public getCatalogRecoveryTracker(): MCPServerCatalogRecoveryTracker {
+    return this.catalogRecoveryTracker;
+  }
+
+  public clearCatalogRecoveryState(userId: string, serverName?: string, generation?: string): void {
+    this.catalogRecoveryTracker.clear(userId, serverName, generation);
+  }
+
+  public override async disconnectUserConnection(
+    userId: string,
+    serverName: string,
+    options?: Parameters<UserConnectionManager['disconnectUserConnection']>[2],
+  ): Promise<void> {
+    if ((options?.reason ?? 'mutation') === 'mutation') {
+      this.clearCatalogRecoveryState(userId, serverName);
+    }
+    await super.disconnectUserConnection(userId, serverName, options);
+  }
+
   public override async getUserConnection(
     opts: t.UserMCPConnectionOptions,
   ): Promise<MCPConnection> {
     const userId = opts.user?.id;
-    if (opts.forceNew || !userId) {
+    if (opts.forceNew || opts.ephemeralConnection || !userId) {
       return super.getUserConnection(opts);
     }
 
@@ -126,6 +196,11 @@ export class MCPManager extends UserConnectionManager {
       opts.serverConfig?.updatedAt != null &&
       connection.isStale(opts.serverConfig.updatedAt);
     if (recovery && !providedConfigIsNewer) {
+      if (recovery.directBearerRecoveryConsumed && opts.directBearerRecoveryState) {
+        opts.directBearerRecoveryState.attempted = true;
+        opts.directBearerRecoveryState.resolvedConfig =
+          recovery.directBearerRecoveryState?.resolvedConfig;
+      }
       if (recovery.callbacks) {
         await recovery.callbacks.add({
           oauthStart: opts.oauthStart,
@@ -136,6 +211,9 @@ export class MCPManager extends UserConnectionManager {
         });
       }
       await this.waitForActiveRecovery(recovery.promise, opts.signal);
+      if (opts.directBearerRecoveryState && recovery.directBearerRecoveryState) {
+        Object.assign(opts.directBearerRecoveryState, recovery.directBearerRecoveryState);
+      }
     }
 
     return super.getUserConnection(opts);
@@ -165,32 +243,60 @@ export class MCPManager extends UserConnectionManager {
   }
 
   private waitForActiveRecovery(recovery: Promise<void>, signal?: AbortSignal): Promise<void> {
+    const shared = this.recoveryCancellation.get(recovery);
+    if (shared) {
+      shared.waiters++;
+    }
+    let released = false;
+    const release = (aborted: boolean) => {
+      if (released || !shared) {
+        return;
+      }
+      released = true;
+      shared.waiters--;
+      if (aborted && shared.waiters === 0) {
+        const abortIfUnowned = () => {
+          if (shared.waiters === 0 && !this.hasConnectionBorrowers(shared.connection)) {
+            shared.controller.abort(signal?.reason);
+          }
+        };
+        if (this.hasConnectionBorrowers(shared.connection)) {
+          /** A leased call registers recovery before releasing its lease after a rejection. */
+          void this.waitForConnectionBorrowersToDrain(shared.connection).then(abortIfUnowned);
+        } else {
+          abortIfUnowned();
+        }
+      }
+    };
     if (!signal) {
-      return recovery;
+      return recovery.finally(() => release(false));
     }
 
     return new Promise<void>((resolve, reject) => {
       const onRecoveryResolved = () => {
+        release(false);
         signal.removeEventListener('abort', onAbort);
         resolve();
       };
       const onRecoveryRejected = (error: unknown) => {
+        release(false);
         signal.removeEventListener('abort', onAbort);
         reject(error);
       };
       const onAbort = () => {
+        release(true);
         signal.removeEventListener('abort', onAbort);
         const reason = signal.reason;
         reject(reason instanceof Error ? reason : new Error('OAuth recovery wait aborted'));
       };
 
+      recovery.then(onRecoveryResolved, onRecoveryRejected);
       if (signal.aborted) {
         onAbort();
         return;
       }
 
       signal.addEventListener('abort', onAbort, { once: true });
-      recovery.then(onRecoveryResolved, onRecoveryRejected);
     });
   }
 
@@ -198,6 +304,26 @@ export class MCPManager extends UserConnectionManager {
     connection: MCPConnection,
   ): Promise<void> | undefined {
     return this.oauthRecoveries.get(connection)?.promise;
+  }
+
+  protected override propagateDirectBearerRecoveryState(
+    connection: MCPConnection,
+    state?: t.DirectBearerRecoveryState,
+  ): void {
+    const recovery = this.oauthRecoveries.get(connection);
+    if (state && recovery?.directBearerRecoveryConsumed) {
+      state.attempted = true;
+      const sharedState = recovery.directBearerRecoveryState;
+      if (sharedState) {
+        state.resolvedConfig = sharedState.resolvedConfig;
+        void recovery.promise.then(
+          () => {
+            state.resolvedConfig = sharedState.resolvedConfig;
+          },
+          () => undefined,
+        );
+      }
+    }
   }
 
   protected override waitForConnectionRecovery(
@@ -224,9 +350,12 @@ export class MCPManager extends UserConnectionManager {
       serverName: string;
       user?: IUser;
       forceNew?: boolean;
+      ephemeralConnection?: boolean;
       flowManager?: FlowStateManager<MCPOAuthTokens | null>;
       /** Pre-resolved config for config-source servers not in YAML/DB */
       serverConfig?: t.ParsedServerConfig;
+      /** One-shot direct-bearer recovery budget shared with the invoking tool call. */
+      directBearerRecoveryState?: t.DirectBearerRecoveryState;
     } & Omit<t.OAuthConnectionOptions, 'useOAuth' | 'user' | 'flowManager'>,
   ): Promise<MCPConnection> {
     const userId = args.user?.id;
@@ -236,7 +365,7 @@ export class MCPManager extends UserConnectionManager {
         ? await MCPServersRegistry.getInstance().getServerConfig(args.serverName, userId)
         : undefined);
 
-    if (effectiveConfig && userId && requiresUserScopedConnection(effectiveConfig)) {
+    if (effectiveConfig && userId && !canUseAppConnection(effectiveConfig)) {
       return this.getUserConnection({
         ...args,
         serverConfig: effectiveConfig,
@@ -317,8 +446,12 @@ export class MCPManager extends UserConnectionManager {
       return { tools: null, oauthRequired: false, oauthUrl: null };
     }
 
+    /** Discovery sends no `requestHeaders`, so only the body values the catalog
+     *  connection itself needs can block it. A server whose body placeholders
+     *  live solely in `requestHeaders` still lists its tools. */
+    const catalogConfig = toCatalogConnectionConfig(serverConfig);
     const missingBodyFields = getMissingRuntimeBodyPlaceholderFields(
-      serverConfig,
+      catalogConfig,
       args.requestBody,
     );
     if (missingBodyFields.length > 0) {
@@ -331,7 +464,7 @@ export class MCPManager extends UserConnectionManager {
     const { allowedDomains, allowedAddresses, useSSRFProtection } =
       await registry.resolveAllowlists({ userId: user?.id, role: user?.role });
     await this.assertResolvedRuntimeConfigAllowed({
-      config: serverConfig,
+      config: catalogConfig,
       user,
       customUserVars: args.customUserVars,
       requestBody: args.requestBody,
@@ -346,7 +479,8 @@ export class MCPManager extends UserConnectionManager {
     const basic: t.BasicConnectionOptions = {
       dbSourced,
       serverName,
-      serverConfig,
+      serverConfig: catalogConfig,
+      serverDefinition: serverConfig,
       useSSRFProtection,
       allowedDomains,
       allowedAddresses,
@@ -366,6 +500,9 @@ export class MCPManager extends UserConnectionManager {
         tools: result.tools,
         oauthRequired: result.oauthRequired,
         oauthUrl: result.oauthUrl,
+        ...(result.oauthRequired && {
+          authenticationKind: getDiscoveryAuthenticationKind(serverConfig, true),
+        }),
       };
     };
 
@@ -375,6 +512,8 @@ export class MCPManager extends UserConnectionManager {
         customUserVars: args.customUserVars,
         requestBody: args.requestBody,
         graphTokenResolver: args.graphTokenResolver,
+        upstreamTokenProvider: args.upstreamTokenProvider,
+        upstreamTokenProviderResolver: args.upstreamTokenProviderResolver,
         connectionTimeout: args.connectionTimeout,
         deadlineMs: args.deadlineMs,
         signal: args.signal,
@@ -384,7 +523,12 @@ export class MCPManager extends UserConnectionManager {
 
     if (!user || !args.flowManager) {
       logger.warn('[MCP][Discovery] OAuth server requires a user and flow manager');
-      return { tools: null, oauthRequired: true, oauthUrl: null };
+      return {
+        tools: null,
+        oauthRequired: true,
+        oauthUrl: null,
+        authenticationKind: getDiscoveryAuthenticationKind(serverConfig),
+      };
     }
 
     const result = await MCPConnectionFactory.discoverTools(basic, {
@@ -399,9 +543,16 @@ export class MCPManager extends UserConnectionManager {
       graphTokenResolver: args.graphTokenResolver,
       connectionTimeout: args.connectionTimeout,
       deadlineMs: args.deadlineMs,
+      onOAuthCredentialsChanged: args.onOAuthCredentialsChanged,
+      onOAuthCredentialsAdopted: args.onOAuthCredentialsAdopted,
+      onOAuthCredentialsChanging: args.onOAuthCredentialsChanging,
+      onOAuthCredentialsInvalidated: () =>
+        getMCPToolsChangedGeneration({ userId: user.id, serverName }),
+      onDiscoveryDetached: args.onDiscoveryDetached,
       oboTokenResolver: args.oboTokenResolver,
       oboTrustChecker: args.oboTrustChecker,
       upstreamTokenProvider: args.upstreamTokenProvider,
+      upstreamTokenProviderResolver: args.upstreamTokenProviderResolver,
       oboIdentityContext: args.oboIdentityContext,
     });
 
@@ -620,6 +771,7 @@ Please follow these instructions when using tools from the respective MCP server
     flowManager: FlowStateManager<MCPOAuthTokens | null>,
     signal?: AbortSignal,
     allowsTakeover = true,
+    rejectedCredentialSetId?: string | null,
   ): Promise<void> {
     const existingRecovery = this.oauthRecoveries.get(connection);
     if (existingRecovery) {
@@ -660,6 +812,7 @@ Please follow these instructions when using tools from the respective MCP server
           connection.emit('oauthReauthenticationRequired', {
             serverName,
             error,
+            rejectedCredentialSetId,
             serverUrl: connection.url,
             userId,
           }),
@@ -692,6 +845,140 @@ Please follow these instructions when using tools from the respective MCP server
     void recovery.then(clearRecovery, clearRecovery);
     void recovery.then(releaseRecoveryDisposal, releaseRecoveryDisposal);
     await this.waitForActiveRecovery(recovery, signal);
+  }
+
+  private recoverDirectOpenIDBearerConnection({
+    connection,
+    serverName,
+    serverConfig,
+    user,
+    flowManager,
+    tokenMethods,
+    oauthStart,
+    oauthEnd,
+    customUserVars,
+    requestBody,
+    requestScopedConnections,
+    graphTokenResolver,
+    upstreamTokenProvider,
+    upstreamTokenProviderResolver,
+    oboIdentityContext,
+    onOAuthCredentialsChanged,
+    onOAuthCredentialsChanging,
+    signal,
+    directBearerRecoveryState = { attempted: true },
+  }: {
+    connection: MCPConnection;
+    serverName: string;
+    serverConfig: t.ParsedServerConfig;
+    user: IUser;
+    flowManager: FlowStateManager<MCPOAuthTokens | null>;
+    tokenMethods?: TokenMethods;
+    oauthStart?: t.OAuthStartHandler;
+    oauthEnd?: () => Promise<void>;
+    customUserVars?: Record<string, string>;
+    requestBody?: RequestBody;
+    requestScopedConnections?: t.RequestScopedMCPConnectionStore;
+    graphTokenResolver?: GraphTokenResolver;
+    upstreamTokenProvider?: UpstreamTokenProvider;
+    upstreamTokenProviderResolver?: UpstreamTokenProviderResolver;
+    oboIdentityContext?: AuthIdentityContext;
+    onOAuthCredentialsChanged?: t.UserConnectionContext['onOAuthCredentialsChanged'];
+    onOAuthCredentialsChanging?: t.UserConnectionContext['onOAuthCredentialsChanging'];
+    signal?: AbortSignal;
+    directBearerRecoveryState?: t.DirectBearerRecoveryState;
+  }): Promise<void> {
+    const existing = this.oauthRecoveries.get(connection);
+    if (existing) {
+      return this.waitForActiveRecovery(existing.promise, signal).then(() => {
+        if (existing.directBearerRecoveryState) {
+          Object.assign(directBearerRecoveryState, existing.directBearerRecoveryState);
+        }
+      });
+    }
+
+    const mutationFence = this.createConnectionMutationFence(user.id, serverName);
+    const recoveryController = new AbortController();
+    const recoverySignal = recoveryController.signal;
+    const recovery = Promise.resolve().then(async () => {
+      let replacementPromise: Promise<MCPConnection>;
+      try {
+        recoverySignal.throwIfAborted();
+        const refreshedConfig = await resolveDirectOpenIDBearerConfig({
+          config: applyRequestHeaders(serverConfig),
+          upstreamTokenProvider,
+          forceRefresh: true,
+          signal: recoverySignal,
+        });
+        directBearerRecoveryState.resolvedConfig = refreshedConfig;
+        recoverySignal.throwIfAborted();
+        connection.stopReconnecting();
+        await this.waitForConnectionBorrowersToDrain(connection);
+        recoverySignal.throwIfAborted();
+        const requestConnectionKey = `${user.id}:${serverName}`;
+        if (requestScopedConnections?.connections.get(requestConnectionKey) === connection) {
+          requestScopedConnections.connections.delete(requestConnectionKey);
+          await this.disposeEvictedConnection(
+            connection,
+            `[MCP][Request-scoped: ${requestConnectionKey}]`,
+          );
+        }
+        mutationFence.assertCurrent();
+        recoverySignal.throwIfAborted();
+        /** Invocation is synchronous through the replacement's own guard registration, closing
+         * the mutation window before this outer reservation is released. */
+        replacementPromise = this.getUserConnection({
+          serverName,
+          serverConfig,
+          user,
+          forceNew: true,
+          flowManager,
+          tokenMethods,
+          oauthStart,
+          oauthEnd,
+          customUserVars,
+          requestBody,
+          requestScopedConnections,
+          graphTokenResolver,
+          upstreamTokenProvider,
+          upstreamTokenProviderResolver,
+          oboIdentityContext,
+          onOAuthCredentialsChanged,
+          onOAuthCredentialsChanging,
+          directBearerRecoveryState,
+          directBearerResolvedConfig: refreshedConfig,
+          signal: recoverySignal,
+        });
+      } finally {
+        mutationFence.release();
+      }
+      const replacement = await replacementPromise;
+      if (requiresEphemeralUserConnection(serverConfig) && !requestScopedConnections) {
+        await this.disposeEvictedConnection(
+          replacement,
+          `[MCP][User: ${user.id}][${serverName}] Unowned recovery replacement`,
+        );
+      }
+    });
+    const recoveryEntry = {
+      promise: recovery,
+      allowsTakeover: false,
+      directBearerRecoveryConsumed: true,
+      directBearerRecoveryState,
+    };
+    this.recoveryCancellation.set(recovery, {
+      controller: recoveryController,
+      waiters: 0,
+      connection,
+    });
+    this.oauthRecoveries.set(connection, recoveryEntry);
+    const clearRecovery = () => {
+      if (this.oauthRecoveries.get(connection) === recoveryEntry) {
+        this.oauthRecoveries.delete(connection);
+      }
+    };
+    void recovery.then(clearRecovery, clearRecovery);
+    return this.waitForActiveRecovery(recovery, signal);
   }
 
   private async connectAfterOAuthRecovery(
@@ -829,7 +1116,10 @@ Please follow these instructions when using tools from the respective MCP server
     oboTokenResolver,
     oboTrustChecker,
     upstreamTokenProvider,
+    upstreamTokenProviderResolver,
     oboIdentityContext,
+    onOAuthCredentialsChanged,
+    onOAuthCredentialsChanging,
   }: {
     user?: IUser;
     serverName: string;
@@ -850,12 +1140,16 @@ Please follow these instructions when using tools from the respective MCP server
     oboTokenResolver?: OboTokenResolver;
     oboTrustChecker?: OboTrustChecker;
     upstreamTokenProvider?: UpstreamTokenProvider;
+    upstreamTokenProviderResolver?: UpstreamTokenProviderResolver;
     oboIdentityContext?: AuthIdentityContext;
+    onOAuthCredentialsChanged?: t.UserConnectionContext['onOAuthCredentialsChanged'];
+    onOAuthCredentialsChanging?: t.UserConnectionContext['onOAuthCredentialsChanging'];
   }): Promise<t.FormattedToolResponse> {
     const userId = user?.id;
     const logPrefix = userId ? `[MCP][User: ${userId}][${serverName}]` : `[MCP][${serverName}]`;
     this.bindRequestScopedConnectionStore(requestScopedConnections);
     let recoveryTakeoverConsumed = false;
+    const directBearerRecoveryState: t.DirectBearerRecoveryState = { attempted: false };
     while (true) {
       /** User-specific connection */
       let connection: MCPConnection | undefined;
@@ -911,18 +1205,25 @@ Please follow these instructions when using tools from the respective MCP server
             oboTokenResolver,
             oboTrustChecker,
             upstreamTokenProvider,
+            upstreamTokenProviderResolver,
             oboIdentityContext,
+            onOAuthCredentialsChanged,
+            onOAuthCredentialsChanging,
             graphTokenResolver,
             signal: options?.signal,
             customUserVars,
             requestBody,
             requestScopedConnections,
             serverConfig: providedConfig,
+            directBearerRecoveryState,
           });
           retainConnectionLease();
           const checkoutRecovery = this.oauthRecoveries.get(connection);
           if (!checkoutRecovery || checkoutRecovery.promise === awaitedCheckoutRecovery) {
             break;
+          }
+          if (checkoutRecovery.directBearerRecoveryConsumed) {
+            directBearerRecoveryState.attempted = true;
           }
           if (checkoutRecovery.callbacks) {
             await checkoutRecovery.callbacks.add({
@@ -937,6 +1238,9 @@ Please follow these instructions when using tools from the respective MCP server
           await releaseConnectionLease();
           try {
             await this.waitForConnectionRecovery(checkoutRecovery.promise, options?.signal);
+            if (checkoutRecovery.directBearerRecoveryState) {
+              Object.assign(directBearerRecoveryState, checkoutRecovery.directBearerRecoveryState);
+            }
           } catch (recoveryError) {
             if (
               options?.signal?.aborted ||
@@ -953,25 +1257,14 @@ Please follow these instructions when using tools from the respective MCP server
           }
         }
 
-        const connectionIsActive = await connection.isConnected();
-        const connectionCheckError = connectionIsActive
-          ? undefined
-          : connection.getLastConnectionCheckError();
-
-        if (
-          !connectionIsActive &&
-          (!userId || !connection.isOAuthAuthenticationError(connectionCheckError))
-        ) {
-          /** May happen if getUserConnection failed silently or app connection dropped */
-          throw new McpError(
-            ErrorCode.InternalError,
-            `${logPrefix} Connection is not active. Cannot execute tool ${toolName}.`,
-          );
-        }
-
         const registry = MCPServersRegistry.getInstance();
-        const rawConfig = providedConfig ?? (await registry.getServerConfig(serverName, userId));
-        if (!rawConfig) {
+        const declaredConfig =
+          providedConfig ?? (await registry.getServerConfig(serverName, userId));
+        /** Folded in before scope detection, Graph preprocessing and
+         *  direct-bearer resolution, so this pipeline sees the same single
+         *  header map the factory does. */
+        const rawConfig = declaredConfig && applyRequestHeaders(declaredConfig);
+        if (!rawConfig || !declaredConfig) {
           throw new McpError(
             ErrorCode.InvalidRequest,
             `${logPrefix} Configuration for server "${serverName}" not found.`,
@@ -990,11 +1283,18 @@ Please follow these instructions when using tools from the respective MCP server
                 graphTokenResolver,
                 scopes: process.env.GRAPH_API_SCOPES,
               });
+        const directBearerRecovery = usesDirectOpenIDBearerRecovery(rawConfig);
+        const bearerConfig = await resolveDirectOpenIDBearerConfig({
+          config: graphProcessedConfig,
+          upstreamTokenProvider,
+          resolvedConfig: directBearerRecoveryState.resolvedConfig,
+          signal: options?.signal,
+        });
         const currentOptions = processMCPEnv({
           user,
           body: requestBody,
           dbSourced: isDbSourced,
-          options: graphProcessedConfig,
+          options: bearerConfig,
           customUserVars,
         });
 
@@ -1003,6 +1303,7 @@ Please follow these instructions when using tools from the respective MCP server
 
         const oboConfig = rawConfig.obo;
         const usesObo = Boolean(oboConfig && oboTokenResolver && user);
+        let oboUpstreamTokenProvider = upstreamTokenProvider;
 
         /**
          * Resolves the downstream token for this call and installs it as the request
@@ -1014,7 +1315,14 @@ Please follow these instructions when using tools from the respective MCP server
           if (!oboConfig || !oboTokenResolver || !user) {
             return;
           }
-          if (!upstreamTokenProvider) {
+          if (!oboUpstreamTokenProvider && upstreamTokenProviderResolver) {
+            oboUpstreamTokenProvider = createLazyOboUpstreamTokenProvider(
+              upstreamTokenProviderResolver,
+              options?.signal,
+              { mcpServer: serverName, scopes: oboConfig.scopes },
+            );
+          }
+          if (!oboUpstreamTokenProvider) {
             throw new McpError(
               ErrorCode.InternalError,
               `${logPrefix} Internal: upstreamTokenProvider not plumbed for OBO tool call. ` +
@@ -1040,13 +1348,16 @@ Please follow these instructions when using tools from the respective MCP server
           }
           let oboTokens: MCPOAuthTokens;
           try {
-            oboTokens = await resolveOboToken(
-              user,
-              oboConfig,
-              oboTokenResolver,
-              upstreamTokenProvider,
-              oboIdentityContext,
-              forceRefresh,
+            oboTokens = await awaitOboOperation(
+              resolveOboToken(
+                user,
+                oboConfig,
+                oboTokenResolver,
+                oboUpstreamTokenProvider,
+                oboIdentityContext,
+                forceRefresh,
+              ),
+              options?.signal,
             );
           } catch (error) {
             if (error instanceof OboTokenResolutionError) {
@@ -1091,6 +1402,7 @@ Please follow these instructions when using tools from the respective MCP server
               {
                 serverName,
                 serverConfig: currentOptions,
+                serverDefinition: declaredConfig,
                 dbSourced: isDbSourced,
                 skipEnvProcessing: true,
                 useSSRFProtection,
@@ -1106,12 +1418,71 @@ Please follow these instructions when using tools from the respective MCP server
                 oauthEnd: relay.end,
                 customUserVars,
                 requestBody,
+                onOAuthCredentialsChanged,
+                onOAuthCredentialsChanging,
+                onOAuthCredentialsInvalidated: () =>
+                  getMCPToolsChangedGeneration({ userId, serverName }),
               },
               connection!,
             );
         }
 
         connection.setRequestHeaders(resolvedHeaders);
+
+        const checkedCredentialSetId = connection.getOAuthCredentialSetId?.();
+        const connectionIsActive = await connection.isConnected(options?.signal);
+        const recordedCredentialSetId = connection.getLastConnectionCheckCredentialSetId?.();
+        const connectionCheckError = connectionIsActive
+          ? undefined
+          : connection.getLastConnectionCheckError();
+
+        if (
+          !connectionIsActive &&
+          (!userId || !connection.isOAuthAuthenticationError(connectionCheckError))
+        ) {
+          /** May happen if getUserConnection failed silently or app connection dropped */
+          throw new McpError(
+            ErrorCode.InternalError,
+            `${logPrefix} Connection is not active. Cannot execute tool ${toolName}.`,
+          );
+        }
+
+        if (
+          !connectionIsActive &&
+          directBearerRecovery &&
+          userId &&
+          user &&
+          isMCPTransportAuthenticationError(connectionCheckError)
+        ) {
+          if (directBearerRecoveryState.attempted) {
+            throw new MCPAuthenticationRejectedError(serverName, false, connectionCheckError);
+          }
+          directBearerRecoveryState.attempted = true;
+          const recovery = this.recoverDirectOpenIDBearerConnection({
+            connection,
+            serverName,
+            serverConfig: declaredConfig,
+            user,
+            flowManager,
+            tokenMethods,
+            oauthStart,
+            oauthEnd,
+            customUserVars,
+            requestBody,
+            requestScopedConnections,
+            graphTokenResolver,
+            upstreamTokenProvider,
+            upstreamTokenProviderResolver,
+            oboIdentityContext,
+            onOAuthCredentialsChanged,
+            onOAuthCredentialsChanging,
+            signal: options?.signal,
+            directBearerRecoveryState,
+          });
+          await releaseConnectionLease();
+          await recovery;
+          continue;
+        }
 
         if (!connectionIsActive) {
           const requestOAuthHandler = attachSharedOAuthHandler;
@@ -1135,6 +1506,9 @@ Please follow these instructions when using tools from the respective MCP server
                 flowManager,
                 options?.signal,
                 !recoveryTakeoverConsumed,
+                recordedCredentialSetId !== undefined
+                  ? recordedCredentialSetId
+                  : checkedCredentialSetId,
               ),
             );
           } catch (recoveryError) {
@@ -1169,10 +1543,41 @@ Please follow these instructions when using tools from the respective MCP server
             },
           );
 
+        const requestedCredentialSetId = connection.getOAuthCredentialSetId?.();
         let result: Awaited<ReturnType<typeof requestTool>>;
         try {
           result = await requestTool();
         } catch (error) {
+          if (directBearerRecovery && user && isMCPTransportAuthenticationError(error)) {
+            if (directBearerRecoveryState.attempted) {
+              throw new MCPAuthenticationRejectedError(serverName, false, error);
+            }
+            directBearerRecoveryState.attempted = true;
+            const recovery = this.recoverDirectOpenIDBearerConnection({
+              connection,
+              serverName,
+              serverConfig: declaredConfig,
+              user,
+              flowManager,
+              tokenMethods,
+              oauthStart,
+              oauthEnd,
+              customUserVars,
+              requestBody,
+              requestScopedConnections,
+              graphTokenResolver,
+              upstreamTokenProvider,
+              upstreamTokenProviderResolver,
+              oboIdentityContext,
+              onOAuthCredentialsChanged,
+              onOAuthCredentialsChanging,
+              signal: options?.signal,
+              directBearerRecoveryState,
+            });
+            await releaseConnectionLease();
+            await recovery;
+            throw new MCPAuthenticationRejectedError(serverName, true, error);
+          }
           /**
            * An OBO server rejecting the bearer mid-session is recoverable here and
            * nowhere else: the downstream token is minted from the upstream session
@@ -1211,6 +1616,7 @@ Please follow these instructions when using tools from the respective MCP server
                   flowManager,
                   options?.signal,
                   !recoveryTakeoverConsumed,
+                  requestedCredentialSetId,
                 ),
               );
             } catch (recoveryError) {
@@ -1243,7 +1649,7 @@ Please follow these instructions when using tools from the respective MCP server
          *  cancellation working, not a fault, so it stays out of the error log.
          *  The error must look like an abort too — a real failure can reject in
          *  the same tick as the Stop and has to stay visible. */
-        if (options?.signal?.aborted === true && isAbortError(error)) {
+        if (isOwnedAbortError(error, options?.signal)) {
           logger.debug(`${logPrefix}[${toolName}] Tool call cancelled by user abort`);
           throw error;
         }
