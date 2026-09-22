@@ -440,8 +440,9 @@ describe('processMemory - GPT-5+ handling', () => {
         graphConfig: expect.objectContaining({
           llmConfig: expect.objectContaining({
             model: 'gpt-5',
+            useResponsesApi: true,
             modelKwargs: {
-              max_completion_tokens: 1000,
+              max_output_tokens: 1000,
             },
           }),
         }),
@@ -482,9 +483,10 @@ describe('processMemory - GPT-5+ handling', () => {
         graphConfig: expect.objectContaining({
           llmConfig: expect.objectContaining({
             model: 'gpt-6',
+            useResponsesApi: true,
             modelKwargs: {
               customParam: 'value',
-              max_completion_tokens: 2000,
+              max_output_tokens: 2000,
             },
           }),
         }),
