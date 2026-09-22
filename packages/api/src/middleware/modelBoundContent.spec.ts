@@ -1639,6 +1639,52 @@ describe('assertModelBoundContent', () => {
     ).toThrow('Submitted file content could not be inspected before processing.');
   });
 
+  it('does not reject canonical agent attachments because unrelated tool schemas exceed the locator budget', () => {
+    const filters: FiltersConfig = {
+      files: {
+        pii: {
+          fields: ['extracted_text'],
+          starterPatterns: [],
+          uninspectable: 'block',
+        },
+      },
+    };
+    const hydratedFile = {
+      file_id: 'file-agent-context',
+      filename: 'context.txt',
+      filepath: '/uploads/context.txt',
+      text: 'safe canonical context',
+    };
+    const toolDefinitions = Array.from({ length: 4_200 }, (_, index) => ({
+      name: `large_tool_${index}`,
+      description: `Safe tool definition ${index}`,
+      parameters: {
+        type: 'object',
+        properties: {
+          value: { type: 'string', description: `Safe value ${index}` },
+        },
+      },
+    }));
+
+    expect(() =>
+      assertModelBoundContent({
+        filters,
+        agents: [
+          {
+            toolDefinitions,
+            tool_resources: {
+              context: {
+                file_ids: ['file-agent-context'],
+                files: [hydratedFile],
+              },
+            },
+            agentContextAttachments: [hydratedFile],
+          } as never,
+        ],
+      }),
+    ).not.toThrow();
+  });
+
   it('does not let unrelated source policy or excluded file fields interfere', () => {
     const opaqueUserMessage = {
       isCreatedByUser: true,
