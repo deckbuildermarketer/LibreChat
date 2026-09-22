@@ -831,6 +831,30 @@ function getHydratedAgentFiles(
   return files;
 }
 
+/**
+ * File fail-close only needs the agent surfaces that can actually carry
+ * file/resource references. Runtime agents may also contain thousands of MCP
+ * tool-schema nodes; cloning that unrelated graph just to omit canonical file
+ * locators can exhaust the structural inspection budget and reject an
+ * otherwise inspectable attachment. The full agent instructions, model
+ * parameters and tool definitions are still inspected separately by
+ * `extractAgentContent`.
+ */
+function getAgentFileInspectionInput(
+  agent: AgentContentInput | null | undefined,
+): RuntimeAgentFileContainer | undefined {
+  if (agent == null) {
+    return undefined;
+  }
+  const runtimeAgent = agent as RuntimeAgentFileContainer;
+  return {
+    attachments: runtimeAgent.attachments,
+    requestAttachments: runtimeAgent.requestAttachments,
+    agentContextAttachments: runtimeAgent.agentContextAttachments,
+    tool_resources: runtimeAgent.tool_resources,
+  };
+}
+
 function isFragmentWithinPath(fragment: TextContentFragment, path: JsonPointer): boolean {
   return fragment.path === path || fragment.path.startsWith(`${path}/`);
 }
@@ -3842,7 +3866,7 @@ function inspectModelBoundContent(
     }
     assertInspectableFileInput(
       input.filters,
-      omitResolvedCanonicalFileLocators(agent, agentFilesById, {
+      omitResolvedCanonicalFileLocators(getAgentFileInspectionInput(agent), agentFilesById, {
         onTraversalFailure: input.onTraversalFailure,
         messageCount: input.storedMessages?.length ?? 0,
       }),

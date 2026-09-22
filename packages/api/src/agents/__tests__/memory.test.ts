@@ -440,8 +440,9 @@ describe('processMemory - GPT-5+ handling', () => {
         graphConfig: expect.objectContaining({
           llmConfig: expect.objectContaining({
             model: 'gpt-5',
+            useResponsesApi: true,
             modelKwargs: {
-              max_completion_tokens: 1000,
+              max_output_tokens: 1000,
             },
           }),
         }),
@@ -482,9 +483,10 @@ describe('processMemory - GPT-5+ handling', () => {
         graphConfig: expect.objectContaining({
           llmConfig: expect.objectContaining({
             model: 'gpt-6',
+            useResponsesApi: true,
             modelKwargs: {
               customParam: 'value',
-              max_completion_tokens: 2000,
+              max_output_tokens: 2000,
             },
           }),
         }),
@@ -574,7 +576,8 @@ describe('processMemory - GPT-5+ handling', () => {
       if (shouldTransform) {
         expect(llmConfig.temperature).toBeUndefined();
         expect(llmConfig.maxTokens).toBeUndefined();
-        expect(llmConfig.modelKwargs?.max_completion_tokens).toBe(1500);
+        expect(llmConfig.useResponsesApi).toBe(true);
+        expect(llmConfig.modelKwargs?.max_output_tokens).toBe(1500);
       } else {
         expect(llmConfig.temperature).toBe(0.5);
         expect(llmConfig.maxTokens).toBe(1500);
@@ -645,7 +648,7 @@ describe('processMemory - GPT-5+ handling', () => {
     );
   });
 
-  it('should use max_completion_tokens when useResponsesApi is false or undefined', async () => {
+  it('routes OpenAI GPT-5+ memory tool runs through Responses API even when chat completions was requested', async () => {
     await processMemory({
       res: mockRes as Response,
       userId: 'test-user',
@@ -658,7 +661,7 @@ describe('processMemory - GPT-5+ handling', () => {
       instructions: 'Test instructions',
       llmConfig: {
         provider: Providers.OPENAI,
-        model: 'gpt-5',
+        model: 'gpt-5.6-luna',
         maxTokens: 1000,
         useResponsesApi: false,
       },
@@ -669,9 +672,10 @@ describe('processMemory - GPT-5+ handling', () => {
       expect.objectContaining({
         graphConfig: expect.objectContaining({
           llmConfig: expect.objectContaining({
-            model: 'gpt-5',
+            model: 'gpt-5.6-luna',
+            useResponsesApi: true,
             modelKwargs: {
-              max_completion_tokens: 1000,
+              max_output_tokens: 1000,
             },
           }),
         }),

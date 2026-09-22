@@ -866,8 +866,17 @@ ${memory ?? 'No existing memories'}`;
       disableStreaming: true,
     } as LLMConfig;
 
-    // Handle GPT-5+ models
-    if ('model' in finalLLMConfig && /\bgpt-[5-9](?:\.\d+)?\b/i.test(finalLLMConfig.model ?? '')) {
+    // Handle GPT-5+ models. Memory runs always expose function tools, so
+    // built-in OpenAI GPT-5+ models must use the Responses API when reasoning
+    // is enabled. Chat Completions rejects that combination (for example,
+    // gpt-5.6-luna + reasoning_effort + set_memory/delete_memory).
+    const isGpt5Plus =
+      'model' in finalLLMConfig && /\bgpt-[5-9](?:\.\d+)?\b/i.test(finalLLMConfig.model ?? '');
+    if (isGpt5Plus && finalLLMConfig.provider === Providers.OPENAI) {
+      (finalLLMConfig as OpenAIClientOptions).useResponsesApi = true;
+    }
+
+    if (isGpt5Plus) {
       // Remove temperature for GPT-5+ models
       delete finalLLMConfig.temperature;
 
