@@ -28,6 +28,10 @@ import {
   requiresOAuthMachinery,
   resolveServerInstructions,
 } from './utils';
+import {
+  createGoogleDriveLargeFileRecovery,
+  isOversizedGoogleDriveDownload,
+} from './dbmDriveGuard';
 import { getMCPAppToolsPublicationGeneration, getMCPToolsChangedGeneration } from './toolsChanged';
 import { MCPAuthenticationRejectedError, isMCPTransportAuthenticationError } from './errors';
 import { resolveDirectOpenIDBearerConfig, usesDirectOpenIDBearerRecovery } from './openid';
@@ -1548,6 +1552,12 @@ Please follow these instructions when using tools from the respective MCP server
         try {
           result = await requestTool();
         } catch (error) {
+          if (isOversizedGoogleDriveDownload({ serverName, toolName, error })) {
+            logger.warn(
+              `${logPrefix}[${toolName}] Google Drive payload exceeded MCP byte limit; returning recovery guidance`,
+            );
+            return createGoogleDriveLargeFileRecovery(toolArguments);
+          }
           if (directBearerRecovery && user && isMCPTransportAuthenticationError(error)) {
             if (directBearerRecoveryState.attempted) {
               throw new MCPAuthenticationRejectedError(serverName, false, error);
