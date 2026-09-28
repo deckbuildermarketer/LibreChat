@@ -19,7 +19,6 @@ const HOT_TOOLS = new Set([
   'read_channel_mcp_slack',
   'read_thread_mcp_slack',
   'search_public_and_private_mcp_slack',
-  'send_message_mcp_slack',
 
   // Marketing director: common routing + top-line performance reads.
   'get_client_profile_mcp_dbm-marketing',
@@ -102,7 +101,7 @@ function isReadOnlyTool(name) {
   }
   if (name.endsWith('_mcp_dbm-wordpress-design')) {
     const base = toolBase(name, 'dbm-wordpress-design');
-    return isReadPrefix(base, ['wp_get_', 'wp_search_']);
+    return isReadPrefix(base, ['get_', 'list_', 'wp_get_', 'wp_search_']);
   }
   if (name.endsWith('_mcp_dbm-wordpress')) {
     const base = toolBase(name, 'dbm-wordpress');
@@ -138,9 +137,40 @@ function isReadOnlyTool(name) {
   return false;
 }
 
+
+/**
+ * Programmatic tool calling is restricted to read-only, non-metered/internal
+ * tools. DataForSEO remains direct-only because code loops can fan out paid
+ * requests much faster than a normal tool-turn sequence.
+ */
+function isPtcEligibleTool(name) {
+  return isReadOnlyTool(name) && !name.endsWith('_mcp_dataforseo');
+}
+
+/**
+ * Background execution is opt-in only for clearly slow, idempotent reads.
+ * Fast lookups stay synchronous so the continuation engine is reserved for
+ * work where it actually reduces wall-clock latency.
+ */
+function isBackgroundEligibleTool(name) {
+  if (!isReadOnlyTool(name)) {
+    return false;
+  }
+  if (name.endsWith('_mcp_dataforseo')) {
+    return true;
+  }
+  if (name.endsWith('_mcp_dbm-wordpress')) {
+    const base = toolBase(name, 'dbm-wordpress');
+    return base.startsWith('wp_visual_qa_');
+  }
+  return false;
+}
+
 function mergeManagedOptions(current, name) {
   const next = { ...(current || {}) };
   const readOnly = isReadOnlyTool(name);
+  const ptcEligible = isPtcEligibleTool(name);
+  const backgroundEligible = isBackgroundEligibleTool(name);
   const hot = HOT_TOOLS.has(name);
 
   if (hot) {
@@ -149,19 +179,17 @@ function mergeManagedOptions(current, name) {
     next.defer_loading = true;
   }
 
-  // PTC is intentionally read-only. Mutations stay direct-only even when a
-  // future model becomes more aggressive about programmatic tool selection.
-  next.allowed_callers = readOnly ? ['direct', 'code_execution'] : ['direct'];
+  // PTC is read-only and avoids metered DataForSEO fan-out. Mutations always
+  // remain direct-only, even if a future model becomes more aggressive.
+  next.allowed_callers = ptcEligible ? ['direct', 'code_execution'] : ['direct'];
 
-  // This is only an availability flag. The model still decides per call
-  // whether to dispatch an eligible read in the background.
-  next.run_in_background = readOnly;
+  // Only clearly slow/idempotent reads can detach into the continuation engine.
+  next.run_in_background = backgroundEligible;
 
-  // Intent labels make write calls and long-running reads inspectable without
-  // changing tool behavior.
+  // Intent labels improve observability without changing execution semantics.
   next.describe_intent = true;
 
-  return { next, readOnly, hot };
+  return { next, readOnly, ptcEligible, backgroundEligible, hot };
 }
 
 function rollbackManagedOptions(current) {
@@ -227,10 +255,13 @@ async function main() {
       nextOptions[name] = managed.next;
       if (managed.hot) hot += 1;
       else deferred += 1;
-      if (managed.readOnly) {
+      if (managed.ptcEligible) {
         ptcReadOnly += 1;
+      }
+      if (managed.backgroundEligible) {
         backgroundEligible += 1;
-      } else {
+      }
+      if (!managed.ptcEligible) {
         directOnly += 1;
       }
     }
