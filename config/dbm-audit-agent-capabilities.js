@@ -1,7 +1,6 @@
 const path = require('path');
 require('module-alias')({ base: path.resolve(__dirname, '..', 'api') });
 
-const mongoose = require('mongoose');
 const connect = require('./connect');
 const { Agent } = require('~/db/models');
 
@@ -141,15 +140,11 @@ async function main() {
       }),
   );
 
-  await mongoose.connection.close();
 }
 
 main()
   .then(() => process.exit(0))
-  .catch(async (error) => {
+  .catch((error) => {
     console.error('[DBM_AGENT_CAPABILITY_AUDIT_ERROR]', error?.stack || error);
-    try {
-      await mongoose.connection.close();
-    } catch {}
     process.exit(1);
   });
