@@ -102,8 +102,7 @@ function withBaseSkillSyncConfig(req, baseConfig) {
       ...(effectiveInvalid ? { skillSync: baseSkillSync } : {}),
       config: {
         ...(req.config.config ?? {}),
-        skillSync:
-          nestedBase.state === 'valid' ? nestedBase.data : baseSkillSync,
+        skillSync: nestedBase.state === 'valid' ? nestedBase.data : baseSkillSync,
       },
     },
   };
