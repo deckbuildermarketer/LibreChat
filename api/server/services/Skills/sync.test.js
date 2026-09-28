@@ -485,6 +485,83 @@ describe('GitHub skill sync service', () => {
     expect(mockCreatedRunners[0].runner.runOnce).toHaveBeenCalledTimes(1);
   });
 
+  it('checks local synced skill files against the configured uploads directory', async () => {
+    const fs = require('node:fs/promises');
+    const db = require('~/models');
+    const ownerId = '507f1f77bcf86cd799439011';
+    const stored = {
+      filepath: `/uploads/${ownerId}/file.md`,
+      source: 'local',
+    };
+    const accessSpy = jest.spyOn(fs, 'access').mockResolvedValue(undefined);
+    db.getSkillFileByPath.mockResolvedValue(stored);
+    mockGetAppConfig.mockResolvedValue({
+      skillSync: undefined,
+      paths: { uploads: '/app/uploads', imageOutput: '/app/client/public/images' },
+    });
+
+    const service = require('./sync');
+    service.initializeGitHubSkillSync({ skillSync: undefined });
+    const result = await mockRunnerDeps.getSkillFileByPath('skill-1', 'file.md');
+
+    expect(accessSpy).toHaveBeenCalledWith(`/app/uploads/${ownerId}/file.md`);
+    expect(result).toBe(stored);
+    accessSpy.mockRestore();
+  });
+
+  it('rehydrates a local synced skill file only when its resolved physical file is missing', async () => {
+    const fs = require('node:fs/promises');
+    const db = require('~/models');
+    const { logger } = require('@librechat/data-schemas');
+    const ownerId = '507f1f77bcf86cd799439011';
+    const stored = {
+      filepath: `/uploads/${ownerId}/missing.md`,
+      source: 'text',
+    };
+    const missing = Object.assign(new Error('missing'), { code: 'ENOENT' });
+    const accessSpy = jest.spyOn(fs, 'access').mockRejectedValue(missing);
+    db.getSkillFileByPath.mockResolvedValue(stored);
+    mockGetAppConfig.mockResolvedValue({
+      skillSync: undefined,
+      paths: { uploads: '/app/uploads', imageOutput: '/app/client/public/images' },
+    });
+
+    const service = require('./sync');
+    service.initializeGitHubSkillSync({ skillSync: undefined });
+    const result = await mockRunnerDeps.getSkillFileByPath('skill-1', 'missing.md');
+
+    expect(accessSpy).toHaveBeenCalledWith(`/app/uploads/${ownerId}/missing.md`);
+    expect(result).toBeNull();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('Missing local skill file; forcing rehydrate'),
+    );
+    accessSpy.mockRestore();
+  });
+
+  it('does not force rehydration when a local path cannot be mapped safely', async () => {
+    const fs = require('node:fs/promises');
+    const db = require('~/models');
+    const { logger } = require('@librechat/data-schemas');
+    const stored = {
+      filepath: '/legacy/path/file.md',
+      source: 'local',
+    };
+    const accessSpy = jest.spyOn(fs, 'access');
+    db.getSkillFileByPath.mockResolvedValue(stored);
+    mockGetAppConfig.mockResolvedValue({ skillSync: undefined, paths: {} });
+
+    const service = require('./sync');
+    service.initializeGitHubSkillSync({ skillSync: undefined });
+    const result = await mockRunnerDeps.getSkillFileByPath('skill-1', 'file.md');
+
+    expect(accessSpy).not.toHaveBeenCalled();
+    expect(result).toBe(stored);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('Could not resolve local skill file path'),
+    );
+    accessSpy.mockRestore();
+  });
+
   it('uses the file owner when deleting synced files from storage', async () => {
     const deleteFile = jest.fn(async () => undefined);
     const ownerId = '507f1f77bcf86cd799439011';

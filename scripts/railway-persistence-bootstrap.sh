@@ -59,4 +59,48 @@ fi
 
 log "uploads -> persistent Railway volume: $PERSIST_UPLOADS"
 
+# One-time, explicitly enabled recovery for a generated GitHub Skill Sync
+# mirror cache. The author directory is synthetic and reproducible from the
+# configured source id; deleting it is safe because the corrected sync will
+# rehydrate the current mirror from GitHub. This is opt-in so ordinary user
+# upload directories can never be selected by accident.
+REPAIR_AUTHOR_ID="${DBM_REPAIR_GITHUB_SKILL_SYNC_AUTHOR_ID:-}"
+if [ -n "$REPAIR_AUTHOR_ID" ]; then
+  case "$REPAIR_AUTHOR_ID" in
+    *[!0-9a-fA-F]*)
+      log "invalid DBM_REPAIR_GITHUB_SKILL_SYNC_AUTHOR_ID; expected 24 hex characters"
+      exit 1
+      ;;
+  esac
+  if [ "${#REPAIR_AUTHOR_ID}" -ne 24 ]; then
+    log "invalid DBM_REPAIR_GITHUB_SKILL_SYNC_AUTHOR_ID length; expected 24 hex characters"
+    exit 1
+  fi
+
+  REPAIR_TARGET="$PERSIST_UPLOADS/$REPAIR_AUTHOR_ID"
+  REPAIR_MARKER="$PUBLIC_IMAGES/.dbm-skill-sync-local-path-repair-$REPAIR_AUTHOR_ID.done"
+
+  if [ -f "$REPAIR_MARKER" ]; then
+    log "one-time GitHub Skill Sync mirror repair marker verified"
+  else
+    case "$REPAIR_TARGET" in
+      "$PERSIST_UPLOADS"/*) ;;
+      *)
+        log "refusing GitHub Skill Sync mirror repair outside persistent uploads"
+        exit 1
+        ;;
+    esac
+
+    if [ -d "$REPAIR_TARGET" ]; then
+      rm -rf -- "$REPAIR_TARGET"
+      log "purged one-time GitHub Skill Sync mirror cache for synthetic author $REPAIR_AUTHOR_ID"
+    else
+      log "GitHub Skill Sync mirror cache was already absent for synthetic author $REPAIR_AUTHOR_ID"
+    fi
+
+    printf '%s\n' "completed" > "$REPAIR_MARKER"
+    log "one-time GitHub Skill Sync mirror repair completed"
+  fi
+fi
+
 exec npm run backend

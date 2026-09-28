@@ -1,4 +1,5 @@
 const fs = require('node:fs/promises');
+const path = require('node:path');
 const { FileContext, FileSources, skillSyncConfigSchema } = require('librechat-data-provider');
 const {
   getStorageMetadata,
@@ -118,7 +119,38 @@ function withBaseSkillSyncConfig(req, baseConfig) {
  * checks are provider-specific and their metadata must not be invalidated by a
  * local-filesystem probe.
  */
-async function getHealthySkillFileByPath(skillId, relativePath) {
+function resolveLocalSkillFilePath(file, appConfig) {
+  const logicalPath = typeof file?.filepath === 'string' ? file.filepath.split('?', 1)[0] : '';
+  if (!logicalPath) {
+    return null;
+  }
+
+  const mappings = [
+    { prefix: '/uploads/', base: appConfig?.paths?.uploads },
+    { prefix: '/images/', base: appConfig?.paths?.imageOutput },
+  ];
+
+  for (const { prefix, base } of mappings) {
+    if (!logicalPath.startsWith(prefix) || typeof base !== 'string' || !base) {
+      continue;
+    }
+    const resolvedBase = path.resolve(base);
+    const resolvedPath = path.resolve(resolvedBase, logicalPath.slice(prefix.length));
+    const relative = path.relative(resolvedBase, resolvedPath);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      throw new Error(`Invalid local skill file path: ${logicalPath}`);
+    }
+    return resolvedPath;
+  }
+
+  return null;
+}
+
+async function getHealthySkillFileByPath(
+  skillId,
+  relativePath,
+  loadAppConfig = loadCurrentAppConfig,
+) {
   const file = await db.getSkillFileByPath(skillId, relativePath);
   if (!file) {
     return null;
@@ -128,8 +160,17 @@ async function getHealthySkillFileByPath(skillId, relativePath) {
     return file;
   }
 
+  const appConfig = await loadAppConfig();
+  const physicalPath = resolveLocalSkillFilePath(file, appConfig);
+  if (!physicalPath) {
+    logger.warn(
+      `[DBM][GitHubSkillSync] Could not resolve local skill file path; trusting stored metadata: ${file.filepath}`,
+    );
+    return file;
+  }
+
   try {
-    await fs.access(file.filepath);
+    await fs.access(physicalPath);
     return file;
   } catch (error) {
     if (error?.code !== 'ENOENT') {
@@ -161,7 +202,8 @@ function createRunner({ getConfig, loadAppConfig, allowServerCredentials = true 
     findSkillBySourceIdentity: db.findSkillBySourceIdentity,
     listSkillsBySource: db.listSkillsBySource,
     listSkillFiles: db.listSkillFiles,
-    getSkillFileByPath: getHealthySkillFileByPath,
+    getSkillFileByPath: (skillId, relativePath) =>
+      getHealthySkillFileByPath(skillId, relativePath, resolveAppConfig),
     upsertSkillFile: db.upsertSkillFile,
     deleteSkillFile: db.deleteSkillFile,
     deleteSkill: db.deleteSkill,
