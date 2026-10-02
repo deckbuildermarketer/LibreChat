@@ -56,13 +56,10 @@ RUN \
 
 COPY --chown=node:node . .
 
-RUN set -e; \
-    # React client build with configurable memory. Fail the image build immediately
-    # if any frontend/package compilation step fails so Railway cannot publish an
-    # image without /app/client/dist and only surface ENOENT at runtime.
-    NODE_OPTIONS="--max-old-space-size=${NODE_MAX_OLD_SPACE_SIZE}" npm run frontend; \
-    test -f /app/client/dist/index.html; \
-    npm prune --production; \
+RUN \
+    # React client build with configurable memory
+    NODE_OPTIONS="--max-old-space-size=${NODE_MAX_OLD_SPACE_SIZE}" npm run frontend && \
+    npm prune --production && \
     npm cache clean --force
 
 # Optional build metadata surfaced in Settings -> About for support triage.
@@ -80,7 +77,7 @@ ENV BUILD_DATE=${BUILD_DATE}
 # Node API setup
 EXPOSE 3080
 ENV HOST=0.0.0.0
-CMD ["sh", "/app/scripts/railway-persistence-bootstrap.sh"]
+CMD ["npm", "run", "backend"]
 
 # Optional: for client with nginx routing
 # FROM nginx:stable-alpine AS nginx-client
