@@ -6,6 +6,9 @@ on:
       - upgrade/v0.8.8-stable
     paths:
       - .github/workflows/dbm-v088-merge-audit.yml
+  pull_request:
+    branches:
+      - secondary
   workflow_dispatch:
 
 permissions:
