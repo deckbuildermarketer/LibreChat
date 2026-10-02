@@ -3,6 +3,17 @@ export * from './azure';
 export * from './bedrock';
 export * from './balance';
 export * from './config';
+/**
+ * DBM runtime limits intentionally override the upstream star-exported values.
+ * Keeping the override in a tiny fork-owned module avoids patching LibreChat's
+ * large config.ts on every upstream sync while preserving DBM's production
+ * subagent capacity.
+ */
+export {
+  MAX_SUBAGENT_DEPTH,
+  MAX_SUBAGENT_GRAPH_NODES,
+  MAX_SUBAGENT_RUN_CONFIGS,
+} from './dbm-limits';
 export * from './footer';
 export * from './langchain';
 export * from './filters';
@@ -13,7 +24,6 @@ export * from './messages';
 export * from './errors';
 /* run steps */
 export * from './runSteps';
-export * from './toolTiming';
 /* artifacts  */
 export * from './artifacts';
 /* schema helpers  */
@@ -21,7 +31,6 @@ export * from './parsers';
 /* custom/dynamic configurations  */
 export * from './generate';
 export * from './models';
-export * from './families';
 /* mcp */
 export * from './mcp';
 /* RBAC */
@@ -46,7 +55,6 @@ export * from './types/graph';
 export * from './types/insights';
 export * from './types/traces';
 export * from './types/subagents';
-export * from './types/background';
 export * from './types/queuedTurns';
 /* access permissions */
 export * from './accessPermissions';
