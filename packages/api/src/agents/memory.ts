@@ -860,8 +860,8 @@ ${memory ?? 'No existing memories'}`;
 
     const defaultLLMConfig: LLMConfig = {
       provider: Providers.OPENAI,
-      model: 'gpt-4.1-mini',
-      temperature: 0.4,
+      model: 'gpt-6-luna',
+      useResponsesApi: true,
       streaming: false,
       disableStreaming: true,
     };
@@ -877,12 +877,17 @@ ${memory ?? 'No existing memories'}`;
       disableStreaming: true,
     } as LLMConfig;
 
-    // Handle GPT-5+ models
-    if ('model' in finalLLMConfig && /\bgpt-[5-9](?:\.\d+)?\b/i.test(finalLLMConfig.model ?? '')) {
-      // Remove temperature for GPT-5+ models
-      delete finalLLMConfig.temperature;
+    // Handle GPT-6+ models. Memory runs always expose function tools, so
+    // built-in OpenAI GPT-6+ models use the Responses API. This keeps memory
+    // tools compatible with reasoning and the GPT-6 request contract.
+    const isGpt6Plus =
+      'model' in finalLLMConfig && /\bgpt-[6-9](?:\.\d+)?\b/i.test(finalLLMConfig.model ?? '');
+    if (isGpt6Plus && finalLLMConfig.provider === Providers.OPENAI) {
+      (finalLLMConfig as OpenAIClientOptions).useResponsesApi = true;
+    }
 
-      // Move maxTokens to modelKwargs for GPT-5+ models
+    if (isGpt6Plus) {
+      delete finalLLMConfig.temperature;
       if ('maxTokens' in finalLLMConfig && finalLLMConfig.maxTokens != null) {
         const modelKwargs = (finalLLMConfig as OpenAIClientOptions).modelKwargs ?? {};
         const paramName =
