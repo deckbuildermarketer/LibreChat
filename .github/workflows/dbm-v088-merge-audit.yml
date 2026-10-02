@@ -1,0 +1,42 @@
+name: DBM v0.8.8 merge audit
+
+on:
+  push:
+    branches:
+      - upgrade/v0.8.8-stable
+    paths:
+      - .github/workflows/dbm-v088-merge-audit.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch exact LibreChat v0.8.8 stable commit
+        run: |
+          git remote add upstream-v088 https://github.com/LibreChat-AI/LibreChat.git
+          git fetch --no-tags upstream-v088 e8f3be08623663d4ad7f7241e693c94469b63bb0
+          test "$(git rev-parse FETCH_HEAD)" = "e8f3be08623663d4ad7f7241e693c94469b63bb0"
+      - name: Audit merge conflicts without changing branch
+        shell: bash
+        run: |
+          set +e
+          git config user.name "DBM Merge Audit"
+          git config user.email "deckbuildermarketer@gmail.com"
+          git merge --no-commit --no-ff e8f3be08623663d4ad7f7241e693c94469b63bb0
+          status=$?
+          echo "MERGE_EXIT=$status"
+          echo "=== CONFLICTS ==="
+          git diff --name-only --diff-filter=U | sort
+          echo "=== CONFLICT_COUNT ==="
+          git diff --name-only --diff-filter=U | wc -l
+          echo "=== STATUS ==="
+          git status --short
+          git merge --abort || true
+          exit 0
