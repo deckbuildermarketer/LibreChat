@@ -74,16 +74,7 @@ function normalizeMemoryLLMConfig(llmConfig?: Partial<LLMConfig>): SanitizedMemo
 }
 
 export const memoryInstructions =
-  'Persistent memory is available across conversations within the current memory scope. Saved memories, if any, are shown below. No entries shown here does not mean memory is unavailable. Use memory tools only if provided; claim a memory was saved or deleted only after the action is confirmed.';
-
-export function formatMemoryContext(memory: string | undefined): string | undefined {
-  if (memory == null) {
-    return undefined;
-  }
-  return memory
-    ? `${memoryInstructions}\n\n# Existing memory about the user:\n${memory}`
-    : memoryInstructions;
-}
+  'The system automatically stores important user information and can update or delete memories based on user requests, enabling dynamic memory management.';
 
 export const SET_MEMORY_TOOL_NAME = 'set_memory';
 export const DELETE_MEMORY_TOOL_NAME = 'delete_memory';
@@ -514,7 +505,7 @@ export function agentHasInlineMemoryTools(agent: InlineMemoryAgent): boolean {
   );
 }
 
-/** Builds the memory system context for an inline-memory agent. */
+/** Builds the existing-memory system context for an inline-memory agent. */
 export async function buildInlineMemoryContext({
   agent,
   req,
@@ -538,7 +529,9 @@ export async function buildInlineMemoryContext({
       agentId: getMemoryAgentId(agent),
       getFormattedMemories,
     });
-    return formatMemoryContext(memories.withKeys) ?? '';
+    return memories.withKeys
+      ? `${memoryInstructions}\n\n# Existing memory about the user:\n${memories.withKeys}`
+      : '';
   } catch (error) {
     logger.error('[memory] Error loading inline agent memory context', error);
     return '';
@@ -698,12 +691,8 @@ export async function buildInlineMemoryTool({
         agentId: memoryAgentId,
         getFormattedMemories: memoryMethods.getFormattedMemories,
       });
-      /** A formatted read failure has no trustworthy usage total. */
-      if (formatted.readFailed) {
-        return null;
-      }
-      totalTokens = formatted.totalTokens ?? 0;
-      tokenCountsByKey = formatted.tokenCountsByKey;
+      totalTokens = formatted?.totalTokens ?? 0;
+      tokenCountsByKey = formatted?.tokenCountsByKey;
     } catch (error) {
       logger.error(
         '[memory] Failed to load memory token count for set_memory',
@@ -860,8 +849,8 @@ ${memory ?? 'No existing memories'}`;
 
     const defaultLLMConfig: LLMConfig = {
       provider: Providers.OPENAI,
-      model: 'gpt-4.1-mini',
-      temperature: 0.4,
+      model: 'gpt-6-luna',
+      useResponsesApi: true,
       streaming: false,
       disableStreaming: true,
     };
@@ -877,12 +866,20 @@ ${memory ?? 'No existing memories'}`;
       disableStreaming: true,
     } as LLMConfig;
 
-    // Handle GPT-5+ models
-    if ('model' in finalLLMConfig && /\bgpt-[5-9](?:\.\d+)?\b/i.test(finalLLMConfig.model ?? '')) {
-      // Remove temperature for GPT-5+ models
+    // Handle GPT-6+ models. Memory runs always expose function tools, so
+    // built-in OpenAI GPT-6+ models use the Responses API. This keeps memory
+    // tools compatible with reasoning and the GPT-6 request contract.
+    const isGpt6Plus =
+      'model' in finalLLMConfig && /\bgpt-[6-9](?:\.\d+)?\b/i.test(finalLLMConfig.model ?? '');
+    if (isGpt6Plus && finalLLMConfig.provider === Providers.OPENAI) {
+      (finalLLMConfig as OpenAIClientOptions).useResponsesApi = true;
+    }
+
+    if (isGpt6Plus) {
+      // Remove sampling temperature for GPT-6+ models
       delete finalLLMConfig.temperature;
 
-      // Move maxTokens to modelKwargs for GPT-5+ models
+      // Move maxTokens to modelKwargs for GPT-6+ models
       if ('maxTokens' in finalLLMConfig && finalLLMConfig.maxTokens != null) {
         const modelKwargs = (finalLLMConfig as OpenAIClientOptions).modelKwargs ?? {};
         const paramName =
@@ -1036,7 +1033,6 @@ export async function createMemoryProcessor({
   messageId,
   memoryMethods,
   conversationId,
-  req,
   config = {},
   filters,
   streamId = null,
@@ -1051,8 +1047,6 @@ export async function createMemoryProcessor({
   /** Agent partition; omit for the shared personal pool */
   agentId?: string;
   memoryMethods: RequiredMemoryMethods;
-  /** Reuses the request-scoped formatted snapshot for the chat context. */
-  req?: object;
   config?: MemoryConfig;
   filters?: FiltersConfig;
   streamId?: string | null;
@@ -1060,41 +1054,27 @@ export async function createMemoryProcessor({
   user?: IUser;
   tenantId?: string;
 }): Promise<
-  | [undefined, undefined]
-  | [
-      string,
-      (
-        messages: BaseMessage[],
-        inspectionMessages?: BaseMessage[],
-      ) => Promise<(TAttachment | null)[] | undefined>,
-    ]
+  [
+    string,
+    (
+      messages: BaseMessage[],
+      inspectionMessages?: BaseMessage[],
+    ) => Promise<(TAttachment | null)[] | undefined>,
+  ]
 > {
   const { validKeys, instructions, llmConfig, tokenLimit } = config;
   const finalInstructions = instructions || getDefaultInstructions(validKeys, tokenLimit);
 
-  const [formatted, memoryEntries] = await Promise.all([
-    (req
-      ? getRequestMemories({
-          req,
-          userId,
-          agentId,
-          getFormattedMemories: memoryMethods.getFormattedMemories,
-        })
-      : memoryMethods.getFormattedMemories({ userId, agentId })
-    ).catch((error) => {
-      logger.error('[memory] Error loading automatic memory context', getSafeErrorMetadata(error));
-      return undefined;
-    }),
-    hasActivePiiPatterns(filters?.memories?.pii)
-      ? memoryMethods.getUserMemories({ userId, agentId })
-      : Promise.resolve(undefined),
-  ]);
-  /** Without the current memory snapshot we cannot safely seed token limits
-   *  or assert that no previous memories exist. Skip extraction for this turn. */
-  if (!formatted || formatted.readFailed) {
-    return [undefined, undefined];
-  }
-  const { withKeys, withoutKeys, totalTokens, tokenCountsByKey } = formatted;
+  const [{ withKeys, withoutKeys, totalTokens, tokenCountsByKey }, memoryEntries] =
+    await Promise.all([
+      memoryMethods.getFormattedMemories({
+        userId,
+        agentId,
+      }),
+      hasActivePiiPatterns(filters?.memories?.pii)
+        ? memoryMethods.getUserMemories({ userId, agentId })
+        : Promise.resolve(undefined),
+    ]);
 
   return [
     withoutKeys,
