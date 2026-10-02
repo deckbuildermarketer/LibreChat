@@ -80,6 +80,32 @@ describe('Static Route Integration', () => {
       const response = await request(app).get('/images/nonexistent.jpg');
       expect(response.status).toBe(404);
     });
+
+    it('should never expose DBM private persistent upload files through /images', async () => {
+      const privateDir = path.join(testDir, '.dbm-persist-uploads');
+      fs.mkdirSync(privateDir, { recursive: true });
+      fs.writeFileSync(path.join(privateDir, 'private-skill-reference.md'), 'private-content');
+
+      setupStaticRoute();
+
+      await request(app)
+        .get('/images/.dbm-persist-uploads/private-skill-reference.md')
+        .expect(404);
+
+      fs.rmSync(privateDir, { recursive: true, force: true });
+    });
+
+    it('should fail closed for encoded access to DBM private persistent paths', async () => {
+      const privateDir = path.join(testDir, '.dbm-persist-uploads');
+      fs.mkdirSync(privateDir, { recursive: true });
+      fs.writeFileSync(path.join(privateDir, 'secret.txt'), 'private-content');
+
+      setupStaticRoute();
+
+      await request(app).get('/images/%2Edbm-persist-uploads/secret.txt').expect(404);
+
+      fs.rmSync(privateDir, { recursive: true, force: true });
+    });
   });
 
   describe('cache behavior', () => {
