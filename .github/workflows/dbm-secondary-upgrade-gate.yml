@@ -1,0 +1,74 @@
+name: DBM Secondary Upgrade Gate
+
+on:
+  pull_request_target:
+    branches:
+      - secondary
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dbm-secondary-upgrade-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Checkout proposed production head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Use Node.js 24.16.0
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.16.0
+          cache: npm
+
+      - name: Verify exact v0.8.8 stable base
+        shell: bash
+        run: |
+          set -euo pipefail
+          git cat-file -e e8f3be08623663d4ad7f7241e693c94469b63bb0^{commit}
+          git merge-base --is-ancestor e8f3be08623663d4ad7f7241e693c94469b63bb0 HEAD
+          node -e "const p=require('./package.json'); if(p.version!=='v0.8.8') throw new Error('Expected v0.8.8, got '+p.version)"
+          node -e "const p=require('./api/package.json'); if(p.version!=='v0.8.8') throw new Error('API expected v0.8.8, got '+p.version)"
+          grep -q "gpt-6.1-sol" packages/data-provider/src/config.ts
+          grep -q "gpt-6.1-sol" packages/data-provider/src/families.ts
+          grep -q "MAX_SUBAGENT_RUN_CONFIGS = useDBMProductionLimits ? 300 : 100" packages/data-provider/src/dbm-limits.ts
+          test -f packages/api/src/agents/dbmV1Subagents.ts
+          test -f packages/api/src/mcp/dbmResultCompaction.ts
+          test -f packages/api/src/mcp/dbmDriveGuard.ts
+          test -f scripts/railway-persistence-bootstrap.sh
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build production frontend and packages
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: npm run frontend
+
+      - name: Run DBM package regression tests
+        run: >-
+          npm --workspace=packages/api run test:ci -- --runInBand --runTestsByPath
+          src/agents/dbmV1Subagents.spec.ts
+          src/agents/__tests__/memory.test.ts
+          src/mcp/__tests__/dbmDriveGuard.test.ts
+          src/mcp/__tests__/dbmResultCompaction.test.ts
+          src/middleware/modelBoundContent.spec.ts
+
+      - name: Run DBM backend regression tests
+        run: >-
+          npm --workspace=api run test:ci -- --runInBand --runTestsByPath
+          server/services/Skills/sync.test.js
+          server/routes/__tests__/static.spec.js
+
+      - name: Syntax-check Railway bootstrap
+        run: sh -n scripts/railway-persistence-bootstrap.sh
