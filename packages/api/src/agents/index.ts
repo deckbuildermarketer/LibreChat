@@ -28,6 +28,16 @@ export * from './backgroundCompletion';
 export * from './backgroundClaims';
 export * from './backgroundCompletionWakeup';
 export * from './initialize';
+/**
+ * DBM /v1 compatibility overrides. The implementations delegate to the latest
+ * upstream initializer/graph resolver and only add support for direct nested
+ * `subagents.agent_ids` on OpenAI-compatible endpoints.
+ */
+export {
+  initializeAgent,
+  resolveSubagentGraphs,
+  needsDBMV1DirectSubagentTrigger,
+} from './dbmV1Subagents';
 export * from './legacy';
 export * from './listing';
 export * from './listingAvatars';
