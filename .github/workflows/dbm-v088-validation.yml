@@ -1,0 +1,55 @@
+name: DBM v0.8.8 Validation
+
+on:
+  pull_request:
+    branches:
+      - secondary
+  push:
+    branches:
+      - integration/v0.8.8-dbmsafe
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.16.0'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Verify exact stable release version
+        run: |
+          node -e "const p=require('./package.json'); if(p.version!=='v0.8.8'){throw new Error('Expected v0.8.8, got '+p.version)}"
+
+      - name: Run DBM compatibility regression tests
+        run: |
+          cd packages/api
+          npx jest --ci --runInBand --coverage=false \
+            src/agents/dbmV1Subagents.spec.ts \
+            src/agents/__tests__/memory.test.ts \
+            src/mcp/__tests__/dbmDriveGuard.test.ts \
+            src/mcp/__tests__/dbmResultCompaction.test.ts \
+            src/middleware/modelBoundContent.spec.ts
+
+      - name: Run Meili compatibility regression test
+        run: |
+          cd packages/data-schemas
+          npx jest --ci --runInBand --coverage=false src/models/plugins/mongoMeili.spec.ts
+
+      - name: Build production frontend and packages
+        run: npm run frontend
+
+      - name: Verify frontend artifact exists
+        run: test -f client/dist/index.html
