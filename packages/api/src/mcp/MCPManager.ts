@@ -28,10 +28,6 @@ import {
   requiresOAuthMachinery,
   resolveServerInstructions,
 } from './utils';
-import {
-  createGoogleDriveLargeFileRecovery,
-  isOversizedGoogleDriveDownload,
-} from './dbmDriveGuard';
 import { getMCPAppToolsPublicationGeneration, getMCPToolsChangedGeneration } from './toolsChanged';
 import { MCPAuthenticationRejectedError, isMCPTransportAuthenticationError } from './errors';
 import { resolveDirectOpenIDBearerConfig, usesDirectOpenIDBearerRecovery } from './openid';
@@ -49,7 +45,6 @@ import { OAuthLifecycleRelay } from './oauth/pending';
 import { preProcessGraphTokens } from '~/utils/graph';
 import { isOwnedAbortError } from '~/utils/errors';
 import { withMCPRequestSignal } from './signal';
-import { compactMCPResult } from './dbmResultCompaction';
 import { formatToolContent } from './parsers';
 import { MCPConnection } from './connection';
 import { mcpConfig } from './mcpConfig';
@@ -1567,12 +1562,6 @@ Please follow these instructions when using tools from the respective MCP server
         try {
           result = await requestTool();
         } catch (error) {
-          if (isOversizedGoogleDriveDownload({ serverName, toolName, error })) {
-            logger.warn(
-              `${logPrefix}[${toolName}] Google Drive payload exceeded MCP byte limit; returning recovery guidance`,
-            );
-            return createGoogleDriveLargeFileRecovery(toolArguments);
-          }
           if (directBearerRecovery && user && isMCPTransportAuthenticationError(error)) {
             if (directBearerRecoveryState.attempted) {
               throw new MCPAuthenticationRejectedError(serverName, false, error);
@@ -1663,8 +1652,7 @@ Please follow these instructions when using tools from the respective MCP server
           await this.updateUserLastActivity(userId);
         }
         this.checkIdleConnections();
-        const formatted = formatToolContent(result as t.MCPToolCallResponse, provider);
-        return compactMCPResult(formatted, { serverName, toolName, toolArguments });
+        return formatToolContent(result as t.MCPToolCallResponse, provider);
       } catch (error) {
         if (error instanceof OAuthRecoveryTakeoverRequired) {
           recoveryTakeoverConsumed = true;
