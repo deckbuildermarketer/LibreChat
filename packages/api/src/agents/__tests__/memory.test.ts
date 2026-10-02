@@ -335,7 +335,7 @@ describe('createMemoryTool', () => {
   });
 });
 
-describe('processMemory - GPT-5+ handling', () => {
+describe('processMemory - GPT-6+ handling', () => {
   let mockSetMemory: jest.Mock;
   let mockDeleteMemory: jest.Mock;
   let mockRes: Partial<Response>;
@@ -428,7 +428,7 @@ describe('processMemory - GPT-5+ handling', () => {
       instructions: 'Test instructions',
       llmConfig: {
         provider: Providers.OPENAI,
-        model: 'gpt-5',
+        model: 'gpt-6-luna',
         temperature: 0.7, // This should be removed
         maxTokens: 1000, // This should be moved to modelKwargs
       },
@@ -439,9 +439,10 @@ describe('processMemory - GPT-5+ handling', () => {
       expect.objectContaining({
         graphConfig: expect.objectContaining({
           llmConfig: expect.objectContaining({
-            model: 'gpt-5',
+            model: 'gpt-6-luna',
+            useResponsesApi: true,
             modelKwargs: {
-              max_completion_tokens: 1000,
+              max_output_tokens: 1000,
             },
           }),
         }),
@@ -454,7 +455,7 @@ describe('processMemory - GPT-5+ handling', () => {
     expect(callArgs.graphConfig.llmConfig.maxTokens).toBeUndefined();
   });
 
-  it('should handle GPT-5+ models with existing modelKwargs', async () => {
+  it('should handle GPT-6+ models with existing modelKwargs', async () => {
     await processMemory({
       res: mockRes as Response,
       userId: 'test-user',
@@ -482,9 +483,10 @@ describe('processMemory - GPT-5+ handling', () => {
         graphConfig: expect.objectContaining({
           llmConfig: expect.objectContaining({
             model: 'gpt-6',
+            useResponsesApi: true,
             modelKwargs: {
               customParam: 'value',
-              max_completion_tokens: 2000,
+              max_output_tokens: 2000,
             },
           }),
         }),
@@ -496,7 +498,7 @@ describe('processMemory - GPT-5+ handling', () => {
     expect(callArgs.graphConfig.llmConfig.maxTokens).toBeUndefined();
   });
 
-  it('should not modify non-GPT-5+ models', async () => {
+  it('should not modify non-GPT-6+ models', async () => {
     await processMemory({
       res: mockRes as Response,
       userId: 'test-user',
@@ -533,10 +535,10 @@ describe('processMemory - GPT-5+ handling', () => {
     expect(callArgs.graphConfig.llmConfig.modelKwargs).toBeUndefined();
   });
 
-  it('should handle various GPT-5+ model formats', async () => {
+  it('should handle various GPT-6+ model formats', async () => {
     const testCases = [
-      { model: 'gpt-5', shouldTransform: true },
-      { model: 'gpt-5-turbo', shouldTransform: true },
+      { model: 'gpt-6-luna', shouldTransform: true },
+      { model: 'gpt-6-sol', shouldTransform: true },
       { model: 'gpt-7-preview', shouldTransform: true },
       { model: 'gpt-9', shouldTransform: true },
       { model: 'gpt-4o', shouldTransform: false },
@@ -574,7 +576,8 @@ describe('processMemory - GPT-5+ handling', () => {
       if (shouldTransform) {
         expect(llmConfig.temperature).toBeUndefined();
         expect(llmConfig.maxTokens).toBeUndefined();
-        expect(llmConfig.modelKwargs?.max_completion_tokens).toBe(1500);
+        expect(llmConfig.useResponsesApi).toBe(true);
+        expect(llmConfig.modelKwargs?.max_output_tokens).toBe(1500);
       } else {
         expect(llmConfig.temperature).toBe(0.5);
         expect(llmConfig.maxTokens).toBe(1500);
@@ -583,7 +586,7 @@ describe('processMemory - GPT-5+ handling', () => {
     }
   });
 
-  it('should use default model (gpt-4.1-mini) without temperature removal when no llmConfig provided', async () => {
+  it('should use default GPT-6 Luna memory model when no llmConfig is provided', async () => {
     await processMemory({
       res: mockRes as Response,
       userId: 'test-user',
@@ -602,8 +605,8 @@ describe('processMemory - GPT-5+ handling', () => {
       expect.objectContaining({
         graphConfig: expect.objectContaining({
           llmConfig: expect.objectContaining({
-            model: 'gpt-4.1-mini',
-            temperature: 0.4, // Default temperature should remain
+            model: 'gpt-6-luna',
+            useResponsesApi: true,
             maxRetries: 0,
           }),
         }),
@@ -624,7 +627,7 @@ describe('processMemory - GPT-5+ handling', () => {
       instructions: 'Test instructions',
       llmConfig: {
         provider: Providers.OPENAI,
-        model: 'gpt-5',
+        model: 'gpt-6-luna',
         maxTokens: 1000,
         useResponsesApi: true,
       },
@@ -635,7 +638,7 @@ describe('processMemory - GPT-5+ handling', () => {
       expect.objectContaining({
         graphConfig: expect.objectContaining({
           llmConfig: expect.objectContaining({
-            model: 'gpt-5',
+            model: 'gpt-6-luna',
             modelKwargs: {
               max_output_tokens: 1000,
             },
@@ -645,7 +648,7 @@ describe('processMemory - GPT-5+ handling', () => {
     );
   });
 
-  it('should use max_completion_tokens when useResponsesApi is false or undefined', async () => {
+  it('routes OpenAI GPT-6+ memory tool runs through Responses API even when chat completions was requested', async () => {
     await processMemory({
       res: mockRes as Response,
       userId: 'test-user',
@@ -658,7 +661,7 @@ describe('processMemory - GPT-5+ handling', () => {
       instructions: 'Test instructions',
       llmConfig: {
         provider: Providers.OPENAI,
-        model: 'gpt-5',
+        model: 'gpt-6-luna',
         maxTokens: 1000,
         useResponsesApi: false,
       },
@@ -669,9 +672,10 @@ describe('processMemory - GPT-5+ handling', () => {
       expect.objectContaining({
         graphConfig: expect.objectContaining({
           llmConfig: expect.objectContaining({
-            model: 'gpt-5',
+            model: 'gpt-6-luna',
+            useResponsesApi: true,
             modelKwargs: {
-              max_completion_tokens: 1000,
+              max_output_tokens: 1000,
             },
           }),
         }),
