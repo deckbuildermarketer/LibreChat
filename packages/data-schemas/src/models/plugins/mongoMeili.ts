@@ -15,6 +15,14 @@ import type { IConversation, IMessage } from '~/types';
 import { buildRetentionVisibilityFilter, legacyPermanentExpirationFilter } from '~/utils/retention';
 import logger from '~/config/meiliLogger';
 
+/** Internal per-query bypass for writes to non-searchable bookkeeping fields. A WeakSet keeps
+ * this marker out of driver options and stored data. Other model middleware still runs. */
+const queriesWithoutMeiliIndexing = new WeakSet<object>();
+export function withoutMeiliIndexing<T extends object>(query: T): T {
+  queriesWithoutMeiliIndexing.add(query);
+  return query;
+}
+
 interface MongoMeiliOptions {
   host: string;
   apiKey: string;
@@ -997,7 +1005,7 @@ export default function mongoMeili(schema: Schema, options: MongoMeiliOptions): 
         },
       },
     );
-    /* DBM compatibility: keep the legacy cleanup index name at v3 because production\n     * already has this exact key/filter definition under that name. Renaming only the\n     * index to upstream's v4 would make Mongoose attempt to create a duplicate index\n     * and log startup errors. The semantics remain identical to upstream.\n     * Serves the legacy branch of `buildExcludedIndexedQuery`. MongoDB rewrites
+    /* Serves the legacy branch of `buildExcludedIndexedQuery`. MongoDB rewrites
      * `$exists: false` into `$not`, which no `partialFilterExpression` accepts, so the
      * unstamped state is expressed as a null equality: it admits an absent or null
      * `_meiliCleanupVersion` and keeps every already-stamped document out, which is what
@@ -1146,6 +1154,10 @@ export default function mongoMeili(schema: Schema, options: MongoMeiliOptions): 
   });
 
   schema.pre('findOneAndUpdate', function (next) {
+    if (queriesWithoutMeiliIndexing.has(this)) {
+      next();
+      return;
+    }
     const query = this as Query<unknown, unknown>;
     if (meiliEnabled) {
       const version = new mongoose.Types.ObjectId().toString();

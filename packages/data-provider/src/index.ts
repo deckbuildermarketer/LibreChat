@@ -24,6 +24,7 @@ export * from './messages';
 export * from './errors';
 /* run steps */
 export * from './runSteps';
+export * from './toolTiming';
 /* artifacts  */
 export * from './artifacts';
 /* schema helpers  */
@@ -31,6 +32,7 @@ export * from './parsers';
 /* custom/dynamic configurations  */
 export * from './generate';
 export * from './models';
+export * from './families';
 /* mcp */
 export * from './mcp';
 /* RBAC */
@@ -55,6 +57,7 @@ export * from './types/graph';
 export * from './types/insights';
 export * from './types/traces';
 export * from './types/subagents';
+export * from './types/background';
 export * from './types/queuedTurns';
 /* access permissions */
 export * from './accessPermissions';

@@ -39,6 +39,8 @@ export {
   needsDBMV1DirectSubagentTrigger,
 } from './dbmV1Subagents';
 export * from './legacy';
+export * from './listing';
+export * from './listingAvatars';
 export * from './lazySubagents';
 export * from './lazyHistory';
 export * from './memory';
@@ -90,10 +92,13 @@ export * from './activityLabels';
 export * from './activityPhases';
 export * from './subagentDelivery';
 export * from './view';
+export * from './tasks';
+export { backgroundTaskRegistry, registerBackgroundTaskShutdown } from './background';
 export * from './workspace';
 export * from './reasoningLabels';
 export * from './refusal';
 export * from './toolValidation';
+export * from './toolTiming';
 export * from './remote';
 export * from './queuedTurns';
 export * from './queuedTurnHttp';
