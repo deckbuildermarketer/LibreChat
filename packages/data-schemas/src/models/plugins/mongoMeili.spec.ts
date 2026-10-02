@@ -925,7 +925,7 @@ describe('Meilisearch Mongoose plugin', () => {
     expect(conversationIndexes).toContainEqual([
       { _meiliIndex: 1, _meiliCleanupVersion: 1, conversationId: 1 },
       expect.objectContaining({
-        name: 'meili_excluded_legacy_cleanup_v4',
+        name: 'meili_excluded_legacy_cleanup_v3',
         partialFilterExpression: {
           subagentThread: { $exists: true },
           _meiliIndex: { $eq: false },
@@ -956,7 +956,7 @@ describe('Meilisearch Mongoose plugin', () => {
     expect(messageIndexes).toContainEqual([
       { _meiliIndex: 1, _meiliCleanupVersion: 1, messageId: 1 },
       expect.objectContaining({
-        name: 'meili_excluded_legacy_cleanup_v4',
+        name: 'meili_excluded_legacy_cleanup_v3',
         partialFilterExpression: {
           subagentTask: { $exists: true },
           _meiliIndex: { $eq: false },
@@ -2446,12 +2446,12 @@ describe('Meilisearch Mongoose plugin', () => {
         expect.arrayContaining([
           'meili_excluded_indexed_cleanup_v3',
           'meili_excluded_attempted_cleanup_v3',
-          'meili_excluded_legacy_cleanup_v4',
+          'meili_excluded_legacy_cleanup_v3',
         ]),
       );
 
       const legacyCleanup = builtIndexes.find(
-        (builtIndex) => builtIndex.name === 'meili_excluded_legacy_cleanup_v4',
+        (builtIndex) => builtIndex.name === 'meili_excluded_legacy_cleanup_v3',
       );
       expect(legacyCleanup?.key).toEqual({
         _meiliIndex: 1,
@@ -2520,7 +2520,7 @@ describe('Meilisearch Mongoose plugin', () => {
        *  invariant that keeps it from growing with every private subagent document. */
       const indexedMessageIds = await messageModel.collection
         .find({ user: 'user-index-population' })
-        .hint('meili_excluded_legacy_cleanup_v4')
+        .hint('meili_excluded_legacy_cleanup_v3')
         .project({ messageId: 1, _id: 0 })
         .toArray();
 
@@ -2541,7 +2541,7 @@ describe('Meilisearch Mongoose plugin', () => {
       const plan = await messageModel.collection.find(legacyFilter).explain('queryPlanner');
 
       expect(JSON.stringify(plan.queryPlanner.winningPlan)).toContain(
-        'meili_excluded_legacy_cleanup_v4',
+        'meili_excluded_legacy_cleanup_v3',
       );
     });
   });
