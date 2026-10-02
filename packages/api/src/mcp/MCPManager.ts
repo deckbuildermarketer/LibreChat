@@ -28,6 +28,10 @@ import {
   requiresOAuthMachinery,
   resolveServerInstructions,
 } from './utils';
+import {
+  createGoogleDriveLargeFileRecovery,
+  isOversizedGoogleDriveDownload,
+} from './dbmDriveGuard';
 import { getMCPAppToolsPublicationGeneration, getMCPToolsChangedGeneration } from './toolsChanged';
 import { MCPAuthenticationRejectedError, isMCPTransportAuthenticationError } from './errors';
 import { resolveDirectOpenIDBearerConfig, usesDirectOpenIDBearerRecovery } from './openid';
@@ -41,10 +45,10 @@ import { UserConnectionManager } from './UserConnectionManager';
 import { ConnectionsRepository } from './ConnectionsRepository';
 import { MCPConnectionFactory } from './MCPConnectionFactory';
 import { processMCPEnv, isPluginSourced } from '~/utils/env';
+import { compactMCPResult } from './dbmResultCompaction';
 import { OAuthLifecycleRelay } from './oauth/pending';
 import { preProcessGraphTokens } from '~/utils/graph';
 import { isOwnedAbortError } from '~/utils/errors';
-import { withMCPRequestSignal } from './signal';
 import { formatToolContent } from './parsers';
 import { MCPConnection } from './connection';
 import { mcpConfig } from './mcpConfig';
@@ -62,8 +66,6 @@ function createOboToolCallErrorMessage(
     failureSuffix = 'Re-authenticate the user or verify the configured OBO scopes and retry.';
   } else if (error.reason === 'session_refresh_failed') {
     failureSuffix = 'Please sign in again.';
-  } else if (error.reason === 'missing_upstream_provider') {
-    failureSuffix = 'Configure a renewable upstream credential provider before retrying.';
   }
 
   return `${logPrefix} ${error.userMessage} Cannot execute tool ${toolName}. ${failureSuffix}`;
@@ -1325,16 +1327,11 @@ Please follow these instructions when using tools from the respective MCP server
             );
           }
           if (!oboUpstreamTokenProvider) {
-            const missing = new OboTokenResolutionError(
-              'missing_upstream_provider',
-              'No upstream credential provider is configured for this OBO MCP tool.',
-            );
-            throw Object.assign(
-              new McpError(
-                ErrorCode.InternalError,
-                createOboToolCallErrorMessage(logPrefix, toolName, missing),
-              ),
-              { cause: missing },
+            throw new McpError(
+              ErrorCode.InternalError,
+              `${logPrefix} Internal: upstreamTokenProvider not plumbed for OBO tool call. ` +
+                'OBO requires a live upstream-token closure; the caller must construct one via ' +
+                'createOpenIDSessionTokenProvider() and forward it through callTool().',
             );
           }
           const oboTrusted = oboTrustChecker
@@ -1368,14 +1365,10 @@ Please follow these instructions when using tools from the respective MCP server
             );
           } catch (error) {
             if (error instanceof OboTokenResolutionError) {
-              const failure = new McpError(
+              throw new McpError(
                 ErrorCode.InternalError,
                 createOboToolCallErrorMessage(logPrefix, toolName, error),
               );
-              if (error.reason === 'missing_upstream_provider') {
-                throw Object.assign(failure, { cause: error });
-              }
-              throw failure;
             }
             throw error;
           }
@@ -1538,23 +1531,20 @@ Please follow these instructions when using tools from the respective MCP server
         }
 
         const requestTool = () =>
-          withMCPRequestSignal(options?.signal, (signal) =>
-            connection!.client.request(
-              {
-                method: 'tools/call',
-                params: {
-                  name: toolName,
-                  arguments: toolArguments,
-                },
+          connection!.client.request(
+            {
+              method: 'tools/call',
+              params: {
+                name: toolName,
+                arguments: toolArguments,
               },
-              CallToolResultSchema,
-              {
-                timeout: connection!.timeout,
-                resetTimeoutOnProgress: true,
-                ...options,
-                signal,
-              },
-            ),
+            },
+            CallToolResultSchema,
+            {
+              timeout: connection!.timeout,
+              resetTimeoutOnProgress: true,
+              ...options,
+            },
           );
 
         const requestedCredentialSetId = connection.getOAuthCredentialSetId?.();
@@ -1562,6 +1552,12 @@ Please follow these instructions when using tools from the respective MCP server
         try {
           result = await requestTool();
         } catch (error) {
+          if (isOversizedGoogleDriveDownload({ serverName, toolName, error })) {
+            logger.warn(
+              `${logPrefix}[${toolName}] Google Drive payload exceeded MCP byte limit; returning recovery guidance`,
+            );
+            return createGoogleDriveLargeFileRecovery(toolArguments);
+          }
           if (directBearerRecovery && user && isMCPTransportAuthenticationError(error)) {
             if (directBearerRecoveryState.attempted) {
               throw new MCPAuthenticationRejectedError(serverName, false, error);
@@ -1652,7 +1648,8 @@ Please follow these instructions when using tools from the respective MCP server
           await this.updateUserLastActivity(userId);
         }
         this.checkIdleConnections();
-        return formatToolContent(result as t.MCPToolCallResponse, provider);
+        const formatted = formatToolContent(result as t.MCPToolCallResponse, provider);
+        return compactMCPResult(formatted, { serverName, toolName, toolArguments });
       } catch (error) {
         if (error instanceof OAuthRecoveryTakeoverRequired) {
           recoveryTakeoverConsumed = true;
