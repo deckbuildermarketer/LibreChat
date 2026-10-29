@@ -60,7 +60,6 @@ const {
   getRemoteAgentPermissions,
   resolveAgentScopedSkillIds,
   // Responses API
-  writeDone,
   buildResponse,
   generateResponseId,
   isValidationFailure,
@@ -134,11 +133,6 @@ function handleExecutionError({ error, res, appConfig }) {
   );
   const errorMessage = getUserFacingProviderError(error, protectionEnabled);
 
-  if (res.headersSent) {
-    writeDone(res);
-    res.end();
-    return;
-  }
   if (isContentFilterError(error)) {
     return sendResponsesErrorResponse(
       res,

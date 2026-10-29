@@ -133,11 +133,11 @@ import {
   INTENT_ARG,
 } from './intent';
 import { buildSkillPrimeMessage, isSkillFilePath, SKILL_FILE_PREFIX } from './skills';
+import { toolExecutionFeedback, toolValidationFeedback } from './validationFeedback';
 import { resolveCallerCapabilityProjectionSnapshot } from './callerCapabilities';
 import { formatEditConflict, parseEditConflict } from '~/code/edits';
 import { BACKGROUND_TOOL_INVOCATION_CONFIG_KEY } from './invocation';
 import { mergeCodeFilesIntoContext } from './codeFilesSession';
-import { toolValidationFeedback } from './validationFeedback';
 import { createSkillContentDigest } from './compatibility';
 import { isMissingSandboxPathError } from '~/files/code';
 import { deleteSkillWithRetry } from '~/skills/cleanup';
@@ -6878,13 +6878,14 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                         : null;
                     const { message, logContext } = getSafeToolError(
                       toolError,
-                      toolValidationFeedback(
-                        toolError,
-                        tc.name,
-                        tool.schema,
-                        normalizedArgs,
-                        backgroundControlEnabled,
-                      ),
+                      toolExecutionFeedback(toolError, tc.name) ||
+                        toolValidationFeedback(
+                          toolError,
+                          tc.name,
+                          tool.schema,
+                          normalizedArgs,
+                          backgroundControlEnabled,
+                        ),
                     );
                     /** Tools report an abort in their own words; a shutdown interrupt
                      *  tells the agent why it happened and that it may retry. */
@@ -7828,13 +7829,14 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
                     }
                     const { message, logContext } = getSafeToolError(
                       toolError,
-                      toolValidationFeedback(
-                        toolError,
-                        tc.name,
-                        tool.schema,
-                        normalizedArgs,
-                        backgroundControlEnabled,
-                      ),
+                      toolExecutionFeedback(toolError, tc.name) ||
+                        toolValidationFeedback(
+                          toolError,
+                          tc.name,
+                          tool.schema,
+                          normalizedArgs,
+                          backgroundControlEnabled,
+                        ),
                     );
                     /** A user Stop rejects every in-flight call at once. That is
                      *  the abort working, not a fault, so it is logged at debug.
