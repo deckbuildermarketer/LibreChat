@@ -1,6 +1,7 @@
 import { skillSyncConfigSchema } from 'librechat-data-provider';
 import type { SkillSyncConfig } from 'librechat-data-provider';
 import type { GitHubSkillSyncRunner } from './github';
+import { normalizeSkillSyncConfigPathsForValidation } from './config';
 
 const REQUEST_SYNC_MIN_INTERVAL_MS = 5 * 60 * 1000;
 const REQUEST_SYNC_STALE_RUNNING_MS = 35 * 60 * 1000;
@@ -63,7 +64,7 @@ function parseSkillSyncConfig(
   if (!raw || typeof raw !== 'object') {
     return undefined;
   }
-  const parsed = skillSyncConfigSchema.safeParse(raw);
+  const parsed = skillSyncConfigSchema.safeParse(normalizeSkillSyncConfigPathsForValidation(raw));
   if (!parsed.success) {
     logger.warn('[GitHubSkillSync] Ignoring invalid skill sync config', {
       issues: parsed.error.flatten(),
