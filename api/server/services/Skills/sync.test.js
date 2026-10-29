@@ -1,3 +1,4 @@
+const path = require('node:path');
 const mockGetAppConfig = jest.fn();
 const mockGetStrategyFunctions = jest.fn();
 const mockGetFileStrategy = jest.fn();
@@ -15,6 +16,8 @@ jest.mock('@librechat/api', () => {
   const actualApi = jest.requireActual('@librechat/api');
   return {
     createSkillSyncTriggerOrchestrator: actualApi.createSkillSyncTriggerOrchestrator,
+    normalizeSkillSyncConfigPathsForValidation:
+      actualApi.normalizeSkillSyncConfigPathsForValidation,
     createGitHubSkillSyncRunner: jest.fn((deps) => {
       mockRunnerDeps = deps;
       const runner = {
@@ -93,6 +96,43 @@ jest.mock('~/server/services/Files/strategies', () => ({
 jest.mock('~/server/utils/getFileStrategy', () => ({ getFileStrategy: mockGetFileStrategy }));
 
 describe('GitHub skill sync service', () => {
+  it('revalidates a normalized repository root without warnings or request credential access', async () => {
+    const { skillSyncConfigSchema } = require('librechat-data-provider');
+    const { logger } = require('@librechat/data-schemas');
+    const skillSync = skillSyncConfigSchema.parse({
+      github: {
+        enabled: true,
+        sources: [
+          {
+            id: 'root-skills',
+            owner: 'LibreChat',
+            repo: 'skills',
+            paths: ['.'],
+            token: '${GITHUB_SKILLS_TOKEN}',
+          },
+        ],
+      },
+    });
+    mockGetAppConfig.mockResolvedValue({ skillSync });
+    const service = require('./sync');
+    service.initializeGitHubSkillSync({ skillSync });
+    const started = await service.maybeRunGitHubSkillSyncForRequest({
+      config: { skillSync, config: { skillSync } },
+      user: { id: 'user-1', tenantId: 'tenant-a' },
+    });
+    expect(skillSync.github.sources[0].paths).toEqual(['']);
+    expect(started).toBe(false);
+    expect(logger.warn).not.toHaveBeenCalled();
+    const requestRunner = service.getGitHubSkillSyncRunnerForRequest({
+      config: { skillSync, config: { skillSync } },
+      user: { id: 'user-1', tenantId: 'tenant-a' },
+      skillSyncAllowServerCredentials: false,
+    });
+    const status = await requestRunner.getStatus();
+    expect(status.sources[0].paths).toEqual(['']);
+    expect(status.sources[0].credentialPresent).toBe(false);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetAppConfig.mockReset();
@@ -504,7 +544,7 @@ describe('GitHub skill sync service', () => {
     service.initializeGitHubSkillSync({ skillSync: undefined });
     const result = await mockRunnerDeps.getSkillFileByPath('skill-1', 'file.md');
 
-    expect(accessSpy).toHaveBeenCalledWith(`/app/uploads/${ownerId}/file.md`);
+    expect(accessSpy).toHaveBeenCalledWith(path.resolve('/app/uploads', ownerId, 'file.md'));
     expect(result).toBe(stored);
     accessSpy.mockRestore();
   });
@@ -530,7 +570,7 @@ describe('GitHub skill sync service', () => {
     service.initializeGitHubSkillSync({ skillSync: undefined });
     const result = await mockRunnerDeps.getSkillFileByPath('skill-1', 'missing.md');
 
-    expect(accessSpy).toHaveBeenCalledWith(`/app/uploads/${ownerId}/missing.md`);
+    expect(accessSpy).toHaveBeenCalledWith(path.resolve('/app/uploads', ownerId, 'missing.md'));
     expect(result).toBeNull();
     expect(logger.warn).toHaveBeenCalledWith(
       expect.stringContaining('Missing local skill file; forcing rehydrate'),

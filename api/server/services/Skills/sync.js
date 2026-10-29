@@ -5,6 +5,7 @@ const {
   getStorageMetadata,
   createGitHubSkillSyncRunner,
   createSkillSyncTriggerOrchestrator,
+  normalizeSkillSyncConfigPathsForValidation,
   startGitHubSkillSyncScheduler,
 } = require('@librechat/api');
 const { logger, runAsSystem } = require('@librechat/data-schemas');
@@ -63,7 +64,7 @@ function parseSkillSync(value) {
   if (value === undefined) {
     return { state: 'missing' };
   }
-  const parsed = skillSyncConfigSchema.safeParse(value);
+  const parsed = skillSyncConfigSchema.safeParse(normalizeSkillSyncConfigPathsForValidation(value));
   return parsed.success ? { state: 'valid', data: parsed.data } : { state: 'invalid' };
 }
 
