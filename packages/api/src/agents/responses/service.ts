@@ -46,6 +46,7 @@ import {
   type StreamHandlerConfig,
 } from './handlers';
 import { declaredClientToolNames, validateClientTools } from './clientTools';
+import { finishFailedResponseStream } from './failure';
 import { aggregateCollectedUsage } from '../usage';
 
 interface ResponseUsageAccumulator {
@@ -465,6 +466,9 @@ export function sendResponsesErrorResponse(
   type: string = 'invalid_request',
   code?: string,
 ): void {
+  if (res.headersSent) {
+    return finishFailedResponseStream(res);
+  }
   res.status(statusCode).json({
     error: {
       type,

@@ -1975,6 +1975,26 @@ describe('createResponse controller', () => {
       },
     );
 
+    it('emits a safe structured error after headers instead of silently ending the stream', async () => {
+      const api = require('@librechat/api');
+      const rawValue = 'PRIVATE-STREAM-TOOL-ARGUMENTS';
+      res.headersSent = true;
+      api.sendResponsesErrorResponse.mockImplementationOnce(
+        jest.requireActual('@librechat/api').sendResponsesErrorResponse,
+      );
+      api.createRun.mockRejectedValueOnce(new Error(rawValue));
+
+      await createResponse(req, res);
+
+      const frames = res.write.mock.calls.map(([frame]) => frame).join('');
+      expect(frames).toContain('event: error');
+      expect(frames).toContain('agent_execution_failed');
+      expect(frames).toContain('[DONE]');
+      expect(frames).not.toContain(rawValue);
+      expect(res.end).toHaveBeenCalledTimes(1);
+      expect(res.json).not.toHaveBeenCalled();
+    });
+
     it('preserves the legacy provider error when protection is inactive', async () => {
       const api = require('@librechat/api');
       const rawValue = 'LEGACY-RESPONSES-PROVIDER-ERROR';
